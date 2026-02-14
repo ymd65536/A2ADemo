@@ -1,7 +1,19 @@
 using A2A;
-using A2A.AspNetCore;
+using A2A.AspNetCore; // ← これも必要かもしれません
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// OpenTelemetryの設定
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("A2A-Server")) // 名前を変えて識別しやすく
+    .WithTracing(tracing => tracing
+        .AddSource("*") // サーバー側の内部ソースをカバー
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddOtlpExporter()); // 環境変数で HTTP/Protobuf に向ける
+
 var app = builder.Build();
 
 // 1. TaskManager の作成（タスクのライフサイクル管理）

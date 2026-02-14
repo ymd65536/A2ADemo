@@ -16,6 +16,13 @@ spec:
       containers:
       - name: agent
         image: a2a-a2a-server:net10
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890" # クライアントと同じ
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"                   # これで疎通を確保
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
         imagePullPolicy: Never # キャッシュ問題を避けるため
         ports:
         - containerPort: 8080
