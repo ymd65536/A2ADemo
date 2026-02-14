@@ -1,7 +1,20 @@
 using A2A;
-using A2A.AspNetCore;
+using OpenTelemetry;
+using OpenTelemetry.Resources; // AddService はこの名前空間の拡張メソッドです
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// OpenTelemetryの設定
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("OrchestratorClient"))
+    .WithTracing(tracing => tracing
+        .AddSource("*") // 全てを対象にする
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddConsoleExporter() // ログに出すために必須
+        .AddOtlpExporter());  // Aspireに飛ばすために必須
+
 var app = builder.Build();
 
 // エージェントへの接続設定

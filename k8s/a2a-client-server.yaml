@@ -50,10 +50,16 @@ spec:
       - name: orchestrator
         image: a2a-orch-a2a-client:net10
         env:
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "grpc" # 明示的に grpc を指定
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true" # これが重要：証明書なしの HTTP 送信を許可
         - name: DOTNET_USE_POLLING_FILE_WATCHER
           value: "true"
         - name: ASPNETCORE_URLS
           value: "http://+:8080"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:4317"
         imagePullPolicy: Never
         ports:
         - containerPort: 8080
@@ -70,3 +76,50 @@ spec:
   - port: 80
     targetPort: 8080
     nodePort: 30001 # ここを叩いてテストする
+---
+# --- 観測側: .NET Aspire Dashboard ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aspire-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aspire-dashboard
+  template:
+    metadata:
+      labels:
+        app: aspire-dashboard
+    spec:
+      containers:
+      - name: dashboard
+        image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
+        env:
+        - name: ASPIRE_ALLOW_UNSECURED_TRANSPORT
+          value: "true" # 開発用：認証なしで OTLP を受け入れる
+        - name: DOTNET_DASHBOARD_OTLP_HTTP_ENDPOINTS
+          value: "http://0.0.0.0:4317"
+        - name: DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS
+          value: "true" # 開発用：ブラウザアクセス時の認証を無効化
+        ports:
+        - containerPort: 18888 # ダッシュボード画面用
+        - containerPort: 4317  # OTLP (gRPC) 受信用
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aspire-dashboard-svc
+spec:
+  selector:
+    app: aspire-dashboard
+  ports:
+  - name: http
+    port: 18888
+    targetPort: 18888
+    nodePort: 30088 # ブラウザでダッシュボードを見るためのポート
+  - name: otlp
+    port: 4317
+    targetPort: 4317
+    appProtocol: grpc
+  type: NodePort
