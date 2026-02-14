@@ -97,14 +97,17 @@ spec:
         image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
         env:
         - name: ASPIRE_ALLOW_UNSECURED_TRANSPORT
-          value: "true" # 開発用：認証なしで OTLP を受け入れる
-        - name: DOTNET_DASHBOARD_OTLP_HTTP_ENDPOINTS
+          value: "true"
+        # 【修正】gRPCの待ち受けを「4317」に固定するように明示
+        - name: DOTNET_DASHBOARD_OTLP_GRPC_ENDPOINTS
           value: "http://0.0.0.0:4317"
+        - name: DOTNET_DASHBOARD_OTLP_HTTP_ENDPOINTS
+          value: "http://0.0.0.0:4318"
         - name: DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS
-          value: "true" # 開発用：ブラウザアクセス時の認証を無効化
+          value: "true"
         ports:
-        - containerPort: 18888 # ダッシュボード画面用
-        - containerPort: 4317  # OTLP (gRPC) 受信用
+        - containerPort: 18888 # 画面用
+        - containerPort: 4317  # 【修正】4317で受けるように設定
 ---
 apiVersion: v1
 kind: Service
@@ -117,9 +120,9 @@ spec:
   - name: http
     port: 18888
     targetPort: 18888
-    nodePort: 30088 # ブラウザでダッシュボードを見るためのポート
+    nodePort: 30088
   - name: otlp
     port: 4317
-    targetPort: 4317
+    targetPort: 4317 # 【修正】コンテナ側の4317へ送る
     appProtocol: grpc
   type: NodePort
