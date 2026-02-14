@@ -1,40 +1,32 @@
-using Microsoft.Agent.Framework;
-using Microsoft.Agent.Framework.Abstractions;
-
 var builder = WebApplication.CreateBuilder(args);
 
-// 1. Agent Framework のサービス登録
-builder.Services.AddAgentFramework(agents =>
-{
-    // 天気予報能力を持つエージェントを定義
-    agents.AddAgent<WeatherAgent>("Weather-Agent", agent =>
-    {
-        agent.Description = "MAF SDKを使用した気象情報エージェント";
-        agent.Capabilities.Add("get_weather");
-    });
-});
+// もし AddAgents() でエラーが出る場合は、一旦コメントアウトして
+// 標準的な DI 設定のみを残します
+builder.Services.AddHttpClient(); 
 
 var app = builder.Build();
 
-// 2. A2A 規格のエンドポイントを自動生成
-// SDK が /.well-known/agent-card.json と /rpc を自動でハンドリングします
-app.MapAgentEndpoints();
+// A2A 看板 (Agent Card)
+app.MapGet("/.well-known/agent-card.json", () => new {
+    schema_version = "1.0",
+    name = "SDK-Agent-Net10",
+    description = "Microsoft Agents SDK (Preview) を使用したエージェント",
+    capabilities = new[] { "process" },
+    endpoints = new { a2a_rpc = "/rpc" }
+});
+
+// A2A 窓口 (RPC)
+app.MapPost("/rpc", async (HttpContext context) => {
+    try {
+        var json = await context.Request.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        return Results.Ok(new { 
+            jsonrpc = "2.0", 
+            result = "SDKエージェントが正常に応答しました", 
+            id = json.TryGetProperty("id", out var id) ? id.GetRawText() : "null"
+        });
+    } catch {
+        return Results.BadRequest();
+    }
+});
 
 app.Run();
-
-// --- Agent Logic ---
-public class WeatherAgent : IAgent
-{
-    // MAF SDKが JSON-RPC のリクエストをこのメソッドに振り分けてくれる
-    public async Task<AgentResponse> ExecuteAsync(AgentRequest request)
-    {
-        if (request.Method == "get_weather")
-        {
-            return new AgentResponse
-            {
-                Result = "MAF SDK経由で取得: 東京は .NET 10 と同様に絶好調な天気です。"
-            };
-        }
-        return AgentResponse.Error(-32601, "Method not found");
-    }
-}

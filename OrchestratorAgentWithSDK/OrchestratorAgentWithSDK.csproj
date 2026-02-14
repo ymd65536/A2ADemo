@@ -8,8 +8,6 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-preview.260212.1" />
-    <PackageReference Include="Microsoft.Agents.Core" Version="1.4.73-beta" />
-    <PackageReference Include="Microsoft.Agents.Hosting.AspNetCore" Version="1.4.73-beta" />
   </ItemGroup>
 
 </Project>
