@@ -10,7 +10,7 @@ var app = builder.Build();
 app.MapGet("/.well-known/agent-card.json", () => new {
     schema_version = "1.0",
     name = "SDK-Agent-Net10",
-    description = "Microsoft Agents SDK (Preview) を使用したエージェント",
+    description = "SDKを使用していないエージェント",
     capabilities = new[] { "process" },
     endpoints = new { a2a_rpc = "/rpc" }
 });
