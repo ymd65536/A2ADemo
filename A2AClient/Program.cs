@@ -2,6 +2,7 @@ using A2A;
 using OpenTelemetry;
 using OpenTelemetry.Resources; // AddService はこの名前空間の拡張メソッドです
 using OpenTelemetry.Trace;
+using OpenTelemetry.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,7 +14,12 @@ builder.Services.AddOpenTelemetry()
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
         .AddConsoleExporter() // ログに出すために必須
-        .AddOtlpExporter());  // Aspireに飛ばすために必須
+        .AddOtlpExporter())  // Aspireに飛ばすために必須
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddRuntimeInstrumentation()    // これもパッケージが必要
+        .AddOtlpExporter());
 
 var app = builder.Build();
 
