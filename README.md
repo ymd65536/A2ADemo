@@ -30,3 +30,10 @@ kubectl apply -f k8s/a2a-deploy.yaml
 curl "http://localhost:30001/ask?tool=get_weather"
 # [.NET 10 Orchestrator] Result: {"jsonrpc":"2.0","result":"現在の東京は .NET 10 のように爽やかな快晴です。","id":"179da644-271c-462f-aa3f-04e939b8e780"}%  
 ```
+
+## wip Step2: Microsoft Agent FrameworkとA2Aで動かす方法
+
+## memo
+
+`OrchestratorAgent`は`AgentSample`のOrchestrator、`WeatherAgent`は`AgentSample`のWeatherAgentです。
+どちらもJSON RPCを使用して通信します。
