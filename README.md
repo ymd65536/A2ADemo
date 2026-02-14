@@ -52,6 +52,18 @@ kubectl apply -f a2a-client-server.yaml
 curl -G "http://localhost:30001/ask" --data-urlencode "text=こんにちは" -v
 ```
 
+## Prometheus and Grafana
+
+```bash
+cd k8s
+kubectl apply -f k8s/prometheus.yaml
+kubectl apply -f k8s/grafana.yaml
+```
+
+```bash
+kubectl get svc
+```
+
 ## memo: kubectl
 
 ```bash

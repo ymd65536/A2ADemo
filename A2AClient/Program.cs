@@ -19,9 +19,11 @@ builder.Services.AddOpenTelemetry()
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
         .AddRuntimeInstrumentation()    // これもパッケージが必要
+        .AddPrometheusExporter()
         .AddOtlpExporter());
 
 var app = builder.Build();
+app.UseOpenTelemetryPrometheusScrapingEndpoint();
 
 // エージェントへの接続設定
 var serverUri = new Uri("http://a2a-server-svc/agent");

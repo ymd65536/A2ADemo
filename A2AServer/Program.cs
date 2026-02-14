@@ -3,6 +3,7 @@ using System.Diagnostics;
 using A2A.AspNetCore; // ← これも必要かもしれません
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using OpenTelemetry.Metrics; // これが必要
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,9 +14,14 @@ builder.Services.AddOpenTelemetry()
         .AddSource("*") // サーバー側の内部ソースをカバー
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
-        .AddOtlpExporter()); // 環境変数で HTTP/Protobuf に向ける
+        .AddOtlpExporter()) // 環境変数で HTTP/Protobuf に向ける
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation() // サーバーへのリクエスト統計
+        .AddRuntimeInstrumentation()    // CPU/メモリの統計
+        .AddPrometheusExporter());      // Prometheus用の出力を有効化
 
 var app = builder.Build();
+app.UseOpenTelemetryPrometheusScrapingEndpoint();
 
 // 1. TaskManager の作成（タスクのライフサイクル管理）
 var taskManager = new TaskManager();
