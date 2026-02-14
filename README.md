@@ -33,6 +33,39 @@ curl "http://localhost:30001/ask?tool=get_weather"
 
 ## wip Step2: Microsoft Agent FrameworkとA2Aで動かす方法
 
+```bash
+cd A2AServer
+docker build -t a2a-a2a-server:net10 .
+```
+
+```bash
+cd A2AClient
+docker build -t a2a-orch-a2a-client:net10 .
+```
+
+```bash
+cd k8s
+kubectl apply -f a2a-client-server.yaml
+```
+
+## memo: kubectl
+
+```bash
+kubectl get pods
+```
+
+```bash
+kubectl rollout restart deployment a2a-server
+```
+
+```bash
+kubectl rollout restart deployment orchestrator-a2a-client
+```
+
+```bash
+kubectl logs orchestrator-a2a-client-6b6448f696-mrxck
+```
+
 ## memo
 
 `OrchestratorAgent`は`AgentSample`のOrchestrator、`WeatherAgent`は`AgentSample`のWeatherAgentです。
