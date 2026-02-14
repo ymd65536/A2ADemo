@@ -99,10 +99,6 @@ spec:
         - name: ASPIRE_ALLOW_UNSECURED_TRANSPORT
           value: "true"
         # 【修正】gRPCの待ち受けを「4317」に固定するように明示
-        - name: DOTNET_DASHBOARD_OTLP_GRPC_ENDPOINTS
-          value: "http://0.0.0.0:4317"
-        - name: DOTNET_DASHBOARD_OTLP_HTTP_ENDPOINTS
-          value: "http://0.0.0.0:4318"
         - name: DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS
           value: "true"
         ports:
