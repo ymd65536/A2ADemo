@@ -1,0 +1,36 @@
+# AgentWithSDK (Microsoft Agent Framework 版)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdk-agent
+  template:
+    metadata:
+      labels:
+        app: sdk-agent
+    spec:
+      containers:
+      - name: agent
+        image: a2a-sdk-agent:net10
+        ports:
+        - containerPort: 8080
+        # .NET 10 のパフォーマンスを活かすためのリソース制限（任意）
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdk-agent-svc # A2Aネットワーク内での解決名
+spec:
+  selector:
+    app: sdk-agent
+  ports:
+  - port: 80
+    targetPort: 8080
