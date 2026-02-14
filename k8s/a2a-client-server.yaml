@@ -49,6 +49,11 @@ spec:
       containers:
       - name: orchestrator
         image: a2a-orch-a2a-client:net10
+        env:
+        - name: DOTNET_USE_POLLING_FILE_WATCHER
+          value: "true"
+        - name: ASPNETCORE_URLS
+          value: "http://+:8080"
         imagePullPolicy: Never
         ports:
         - containerPort: 8080

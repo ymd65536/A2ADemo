@@ -48,6 +48,10 @@ cd k8s
 kubectl apply -f a2a-client-server.yaml
 ```
 
+```bash
+curl -G "http://localhost:30001/ask" --data-urlencode "text=こんにちは" -v
+```
+
 ## memo: kubectl
 
 ```bash
