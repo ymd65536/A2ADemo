@@ -51,7 +51,7 @@ spec:
         image: a2a-orch-a2a-client:net10
         env:
         - name: OTEL_EXPORTER_OTLP_PROTOCOL
-          value: "grpc" # 明示的に grpc を指定
+          value: "http/protobuf" # 明示的に grpc を指定
         - name: OTEL_EXPORTER_OTLP_INSECURE
           value: "true" # これが重要：証明書なしの HTTP 送信を許可
         - name: DOTNET_USE_POLLING_FILE_WATCHER
@@ -59,7 +59,7 @@ spec:
         - name: ASPNETCORE_URLS
           value: "http://+:8080"
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://aspire-dashboard-svc:4317"
+          value: "http://aspire-dashboard-svc:18890"
         imagePullPolicy: Never
         ports:
         - containerPort: 8080
@@ -109,6 +109,7 @@ spec:
         - containerPort: 18888 # 画面用
         - containerPort: 4317  # 【修正】4317で受けるように設定
 ---
+# --- aspire-dashboard-svc (Service) の修正 ---
 apiVersion: v1
 kind: Service
 metadata:
@@ -121,8 +122,11 @@ spec:
     port: 18888
     targetPort: 18888
     nodePort: 30088
-  - name: otlp
+  - name: otlp-grpc      # これまでの gRPC 用 (4317)
     port: 4317
-    targetPort: 4317 # 【修正】コンテナ側の4317へ送る
+    targetPort: 18889
     appProtocol: grpc
+  - name: otlp-http      # 【追加】今回提案した HTTP 用 (18890)
+    port: 18890
+    targetPort: 18890
   type: NodePort
