@@ -10,7 +10,7 @@ data:
       - job_name: 'a2a-apps'
         static_configs:
           # Podのサービス名とポートを指定
-          - targets: ['a2a-server-svc:80', 'a2a-client-svc:80', 'orchestrator-a2a-client-svc:80']
+          - targets: ['a2a-server-svc:80', 'orchestrator-a2a-client-svc:80']
 ---
 apiVersion: apps/v1
 kind: Deployment
