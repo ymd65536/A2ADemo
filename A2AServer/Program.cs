@@ -1,4 +1,5 @@
 using A2A;
+using System.Diagnostics;
 using A2A.AspNetCore; // ← これも必要かもしれません
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -30,6 +31,8 @@ app.Run();
 
 public class SimpleAgent
 {
+    private static readonly ActivitySource MyAgentSource = new ActivitySource("MyAgent.Custom");
+
     public void Attach(ITaskManager taskManager)
     {
         // メッセージ受信時の処理を登録
@@ -40,6 +43,8 @@ public class SimpleAgent
 
     private Task<A2AResponse> ProcessMessageAsync(MessageSendParams messageParams, CancellationToken ct)
     {
+        using var activity = MyAgentSource.StartActivity("ロジック実行中");
+
         // 送信されたテキストを取得
         var userText = messageParams.Message.Parts.OfType<TextPart>().FirstOrDefault()?.Text ?? "";
 
