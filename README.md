@@ -33,20 +33,30 @@ curl "http://localhost:30001/ask?tool=get_weather"
 
 ## Step2: A2AをKubernetesで動かす
 
+まずは、A2A ServerとA2A Clientの両方をビルドしてください。
+
+A2A Serverをビルドします。
+
 ```bash
 cd A2AServer
 docker build -t a2a-a2a-server:net10 .
 ```
+
+次にA2A Clientをビルドします。
 
 ```bash
 cd A2AClient
 docker build -t a2a-orch-a2a-client:net10 .
 ```
 
+KubernetesクラスターにA2A ServerとA2A Clientをデプロイします。
+
 ```bash
 cd k8s
 kubectl apply -f a2a-client-server.yaml
 ```
+
+A2A Clientが起動したら、Orchestratorのサービスを確認します。
 
 ```bash
 curl -G "http://localhost:30001/ask" --data-urlencode "text=こんにちは" -v
@@ -54,17 +64,32 @@ curl -G "http://localhost:30001/ask" --data-urlencode "text=こんにちは" -v
 
 ## Prometheus and Grafana
 
+つぎに、PrometheusとGrafanaを使用してクラスターのモニタリングを行います。
+べつのターミナルで、以下のコマンドを実行してPrometheusとGrafanaをクラスターにデプロイしてください。
+
+まずは、k8sディレクトリに移動します。
+
 ```bash
 cd k8s
+```
+
+Prometheusをデプロイします。
+
+```bash
 kubectl apply -f k8s/prometheus.yaml
+```
+
+つぎに、Grafanaをデプロイします。
+
+```bash
 kubectl apply -f k8s/grafana.yaml
 ```
+
+## memo: kubectl
 
 ```bash
 kubectl get svc
 ```
-
-## memo: kubectl
 
 ```bash
 kubectl get pods
