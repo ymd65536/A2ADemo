@@ -80,7 +80,10 @@ public class SimpleAgent
             Name = "サンプル .NET エージェント",
             Description = "A2Aプロトコルで通信するデモ用エージェントです。",
             Url = agentUrl,
-            Capabilities = new AgentCapabilities { Streaming = false }
+            Capabilities = new AgentCapabilities {
+                Streaming = false,
+                Extensions = new()
+            }
         });
     }
 }

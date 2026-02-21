@@ -98,7 +98,7 @@ async Task<AgentCard?> FetchAgentCardWithRetry(HttpClient http, string ip)
         try
         {
             // 前回の教訓：正しいパスを叩く
-            return await http.GetFromJsonAsync<AgentCard>($"http://{ip}:8080/.well-known/agent-card");
+            return await http.GetFromJsonAsync<AgentCard>($"http://{ip}:8080/.well-known/agent-card.json");
         }
         catch
         {

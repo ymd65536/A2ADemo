@@ -115,33 +115,13 @@ kubectl logs orchestrator-a2a-client-6b6448f696-mrxck
 ## wip
 
 ```bash
-curl -X POST http://localhost:7777/agent \
-     -H "Content-Type: application/json" \
-     -d '{"jsonrpc": "2.0", "method": "a2a.send", "params": {}, "id": 1}'
 
-curl http://localhost:7777/.well-known/agent-card.json
 kubectl rollout restart deployment a2a-agents
+kubectl rollout restart deployment a2a-dispatcher
 
 kubectl get pods 
-kubectl port-forward pod/a2a-agents-6b5664fc8f-9p5qz 7777:8080
-kubectl logs -f pod/a2a-agents-6b5664fc8f-9p5qz
+kubectl port-forward a2a-dispatcher-594c65c8cd-xmdlt  7777:8080
 
-
-curl -X POST http://localhost:7777/agent \
-     -H "Content-Type: application/json" \
-     -d '{
-       "jsonrpc": "2.0",
-       "method": "a2a_task_SendMessage",
-       "params": {
-         "message": {
-           "role": "user",
-           "parts": [
-             {
-               "text": "こんにちは"
-             }
-           ]
-         }
-       },
-       "id": 1
-     }'
+kubectl logs -f a2a-dispatcher-58c976cf69-2k52j
 ```
+
