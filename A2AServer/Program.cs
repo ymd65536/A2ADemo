@@ -21,6 +21,13 @@ builder.Services.AddOpenTelemetry()
         .AddPrometheusExporter());      // Prometheus用の出力を有効化
 
 var app = builder.Build();
+
+// これを app.MapA2A の「前」に追加してください！
+app.Use(async (context, next) => {
+    Console.WriteLine($"[HTTP Request] {context.Request.Method} {context.Request.Path}");
+    await next();
+});
+
 app.UseOpenTelemetryPrometheusScrapingEndpoint();
 
 // 1. TaskManager の作成（タスクのライフサイクル管理）
