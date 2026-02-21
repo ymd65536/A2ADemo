@@ -1,0 +1,73 @@
+# 1. ルーターに「Podを見る権限」を与える
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: a2a-dispatcher-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+subjects:
+- kind: ServiceAccount
+  name: a2a-dispatcher-sa
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# 2. ルーター（司令塔）のデプロイ
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a2a-dispatcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-dispatcher
+  template:
+    metadata:
+      labels:
+        app: a2a-dispatcher
+    spec:
+      serviceAccountName: a2a-dispatcher-sa
+      containers:
+      - name: dispatcher
+        image: a2a-dispatcher:latest # 後ほど .NET で作成するアプリ
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+---
+# 3. エージェント群（例：最初は2つのレプリカ）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a2a-agents
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: a2a-agent
+  template:
+    metadata:
+      labels:
+        app: a2a-agent
+        # ここに個別の個性を書くのではなく、
+        # アプリ起動時に「カード」経由で個性を宣言させる
+    spec:
+      containers:
+      - name: agent
+        image: a2a-a2a-server:net10
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
