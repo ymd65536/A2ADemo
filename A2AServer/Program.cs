@@ -21,6 +21,13 @@ builder.Services.AddOpenTelemetry()
         .AddPrometheusExporter());      // Prometheus用の出力を有効化
 
 var app = builder.Build();
+
+// これを app.MapA2A の「前」に追加してください！
+app.Use(async (context, next) => {
+    Console.WriteLine($"[HTTP Request] {context.Request.Method} {context.Request.Path}");
+    await next();
+});
+
 app.UseOpenTelemetryPrometheusScrapingEndpoint();
 
 // 1. TaskManager の作成（タスクのライフサイクル管理）
@@ -73,7 +80,10 @@ public class SimpleAgent
             Name = "サンプル .NET エージェント",
             Description = "A2Aプロトコルで通信するデモ用エージェントです。",
             Url = agentUrl,
-            Capabilities = new AgentCapabilities { Streaming = false }
+            Capabilities = new AgentCapabilities {
+                Streaming = false,
+                Extensions = new()
+            }
         });
     }
 }
