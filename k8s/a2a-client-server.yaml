@@ -32,11 +32,13 @@ kind: Service
 metadata:
   name: a2a-server-svc
 spec:
+  type: NodePort
   selector:
     app: a2a-server
   ports:
   - port: 80
     targetPort: 8080
+    nodePort: 30002
 ---
 # --- 依頼側: 新オーケストレーター (SDK版) ---
 apiVersion: apps/v1
@@ -117,6 +119,7 @@ kind: Service
 metadata:
   name: aspire-dashboard-svc
 spec:
+  type: NodePort
   selector:
     app: aspire-dashboard
   ports:
@@ -131,4 +134,3 @@ spec:
   - name: otlp-http
     port: 18890
     targetPort: 18890
-  type: NodePort
