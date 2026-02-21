@@ -87,49 +87,78 @@ kubectl apply -f k8s/grafana.yaml
 
 ## Step3: Dispatcher を使ってエージェントにリクエストを送る
 
-Dispatcher は Kubernetes 上のエージェント Pod を自動で検出し、`requiredCapability` に合致するエージェントへリクエストをルーティングします。
+Dispatcher は Kubernetes 上のエージェント Pod を自動で検出し、`requiredCapability` に合致するエージェントへ A2A プロトコル (JSON-RPC `message/send`) でリクエストをルーティングします。
+
+### 仕組み
+
+```
+curl POST /agent
+  ↓
+Dispatcher
+  ├─ [起動時] app=a2a-agent ラベルの Pod を K8s Watch で監視
+  │           → /.well-known/agent-card.json を取得してカタログに登録
+  └─ [受信時] requiredCapability に合致するエージェントを検索
+              → A2A JSON-RPC (message/send) でその Pod IP へ転送
+                ↓
+              A2AServer Pod
+                ↓
+              レスポンスを返す
+```
+
+新しいエージェントを追加するには、Pod ラベルに `app: a2a-agent` を付けて `kubectl apply` するだけで Dispatcher が自動発見します。
 
 ### 1. コンテナイメージのビルド
 
+A2AServer と Dispatcher の両方をビルドします。
+
 ```bash
-cd A2ADispatcher/Dispatcher
+cd A2AServer
+docker build -t a2a-a2a-server:net10 .
+
+cd ../A2ADispatcher/Dispatcher
 docker build -t a2a-dispatcher:latest .
 ```
 
 ### 2. Kubernetes へのデプロイ
+
+`infrastructure.yaml` には ServiceAccount / RBAC / Dispatcher / A2AServer がすべて含まれています。
 
 ```bash
 cd A2ADispatcher
 kubectl apply -f infrastructure.yaml
 ```
 
-デプロイ状況を確認します。
+Pod の起動を確認します。
 
 ```bash
-kubectl get pods -l app=a2a-dispatcher
-kubectl get svc a2a-dispatcher-svc
+kubectl get pods
+# NAME                              READY   STATUS    RESTARTS   AGE
+# a2a-dispatcher-xxxxxxxxxx-xxxxx   1/1     Running   0          ...
+# a2a-server-xxxxxxxxxx-xxxxx       1/1     Running   0          ...
 ```
 
-### 3. NodePort の確認
+Dispatcher のログで A2AServer が自動登録されていることを確認します。
 
 ```bash
-kubectl get svc a2a-dispatcher-svc
-# NAME                  TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE
-# a2a-dispatcher-svc   NodePort   10.96.x.x       <none>        80:3xxxx/TCP   ...
+kubectl logs -f deployment/a2a-dispatcher
+# [Discovery] 既存 Pod を発見: 10.42.x.x
+# [Discovery] Trying http://10.42.x.x:8080/.well-known/agent.json ...
+# [Discovery] エージェントカード取得成功: http://10.42.x.x:8080/.well-known/agent-card.json
+# [Discovery] Registered (initial scan): サンプル .NET エージェント (10.42.x.x)
+# [Discovery] Watch 開始 (resourceVersion=xxxxx)
 ```
 
-`PORT(S)` 列の `80:3xxxx` の右側の番号 (例: `30080`) が NodePort です。
+### 3. リクエストの送信
 
-### 4. リクエストの送信
-
+Dispatcher の NodePort は `30010` に固定されています。
 `POST /agent` エンドポイントに JSON ボディを送ります。
 
 ```bash
-curl -X POST http://localhost:<NodePort>/agent \
+curl -X POST http://localhost:30010/agent \
   -H "Content-Type: application/json" \
   -d '{
-    "requiredCapability": "weather",
-    "message": "今日の東京の天気は？"
+    "requiredCapability": "サンプル .NET エージェント",
+    "message": "こんにちは"
   }'
 ```
 
@@ -137,14 +166,23 @@ curl -X POST http://localhost:<NodePort>/agent \
 
 | フィールド | 型 | 説明 |
 |---|---|---|
-| `requiredCapability` | string | 処理させたいエージェントの能力名 (例: `"weather"`) |
+| `requiredCapability` | string | エージェントカードの `capabilities.extensions[].name`、または未設定の場合はエージェント名 |
 | `message` | string | エージェントに送るメッセージ本文 |
 
 #### レスポンス例
 
 ```json
 {
-  "result": "現在の東京は晴れです。"
+  "agent": "サンプル .NET エージェント",
+  "endpoint": "http://10.42.x.x:8080/agent",
+  "reply": "[A2A応答] あなたは「こんにちは」と言いましたね。",
+  "rawResult": {
+    "role": "agent",
+    "messageId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "parts": [
+      { "kind": "text", "text": "[A2A応答] あなたは「こんにちは」と言いましたね。" }
+    ]
+  }
 }
 ```
 
@@ -152,33 +190,61 @@ curl -X POST http://localhost:<NodePort>/agent \
 
 ```json
 {
-  "error": "能力 'weather' を持つエージェントが見つかりません。"
+  "error": "能力 'xxx' を持つエージェントが見つかりません。",
+  "registered": [
+    { "name": "サンプル .NET エージェント", "capabilities": ["サンプル .NET エージェント"] }
+  ]
 }
 ```
 
-### 5. ローカル開発時 (Kubernetes なし)
+### 4. ローカル開発時 (Kubernetes なし)
 
-`dotnet run` で直接起動する場合は `http://localhost:5073` を使います。  
-※ Kubernetes クライアントが InClusterConfig を要求するため、ローカル実行では K8s 接続エラーが出ますが、エンドポイント自体の動作確認はできます。
+`appsettings.Development.json` の `Agents:StaticList` に A2AServer の URL を指定することで、K8s なしでも動作確認できます。
+
+```json
+{
+  "Agents": {
+    "StaticList": [
+      { "BaseUrl": "http://localhost:5162" }
+    ]
+  }
+}
+```
+
+A2AServer を起動してから Dispatcher を起動します。
 
 ```bash
+# ターミナル1
+cd A2AServer
+dotnet run
+# → http://localhost:5162 で起動
+
+# ターミナル2
 cd A2ADispatcher/Dispatcher
 dotnet run
+# → http://localhost:5073 で起動
+# [Discovery] 静的エージェントを検索中: http://localhost:5162
+# [Discovery] 登録成功: サンプル .NET エージェント (http://localhost:5162)
 ```
 
 ```bash
 curl -X POST http://localhost:5073/agent \
   -H "Content-Type: application/json" \
-  -d '{"requiredCapability": "weather", "message": "今日の天気は？"}'
+  -d '{"requiredCapability": "サンプル .NET エージェント", "message": "こんにちは"}'
 ```
 
-### 6. ログの確認
+### 5. 新しいエージェントの追加
 
-```bash
-kubectl logs -f deployment/a2a-dispatcher
-# [Discovery] Registered: WeatherAgent (10.x.x.x) - Capabilities: weather
-# [Discovery] Removed: 10.x.x.x
+`app: a2a-agent` ラベルを付けた Deployment を `kubectl apply` するだけで Dispatcher が自動発見します。
+
+```yaml
+template:
+  metadata:
+    labels:
+      app: a2a-agent  # ← このラベルが Discovery の唯一の条件
 ```
+
+エージェント側のコードで `capabilities.extensions` に能力名を宣言すると、その名前で検索できるようになります。
 
 ---
 
