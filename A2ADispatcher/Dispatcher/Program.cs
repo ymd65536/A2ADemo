@@ -46,18 +46,66 @@ app.MapPost("/agent", async (AgentRequest request, IHttpClientFactory httpClient
 
     if (targetAgent == null)
     {
-        return Results.NotFound(new { error = $"能力 '{request.RequiredCapability}' を持つエージェントが見つかりません。登録済み: [{string.Join(", ", agentCatalog.Values.Select(a => $"{a.Card.Name}={string.Join("|", a.Card.GetCapabilityNames())}"))}]" });
+        return Results.NotFound(new
+        {
+            error = $"能力 '{request.RequiredCapability}' を持つエージェントが見つかりません。",
+            registered = agentCatalog.Values.Select(a => new
+            {
+                name = a.Card.Name,
+                capabilities = a.Card.GetCapabilityNames()
+            })
+        });
     }
 
-    // 発見したエージェントの Endpoint へリクエストを転送
+    // 発見したエージェントの Endpoint へ A2A JSON-RPC message/send を転送
     var httpClient = httpClientFactory.CreateClient();
     var targetUrl = $"{targetAgent.Endpoint}/agent";
-    Console.WriteLine($"[Routing] → {targetUrl}");
+    Console.WriteLine($"[Routing] {request.RequiredCapability} → {targetUrl}");
 
-    var response = await httpClient.PostAsJsonAsync(targetUrl, request);
-    var content = await response.Content.ReadFromJsonAsync<object>();
+    // A2A SDK が期待する JSON-RPC リクエストを組み立てる
+    var rpcRequest = new A2AJsonRpcRequest
+    {
+        Id = Guid.NewGuid().ToString(),
+        Method = "message/send",
+        Params = new A2AMessageSendParams
+        {
+            Message = new A2AMessage
+            {
+                Role = "user",
+                MessageId = Guid.NewGuid().ToString(),
+                Parts = [new A2ATextPart { Text = request.Message }]
+            }
+        }
+    };
 
-    return Results.Json(content, statusCode: (int)response.StatusCode);
+    var response = await httpClient.PostAsJsonAsync(targetUrl, rpcRequest);
+    var rpcResponse = await response.Content.ReadFromJsonAsync<A2AJsonRpcResponse>();
+
+    if (rpcResponse?.Error != null)
+    {
+        return Results.Problem(rpcResponse.Error.Message, statusCode: 502);
+    }
+
+    // レスポンスからテキストを取り出して返す
+    var replyText = rpcResponse?.Result?.Parts
+        ?.OfType<System.Text.Json.JsonElement>()
+        .Select(p =>
+        {
+            p.TryGetProperty("text", out var t);
+            return t.ValueKind == System.Text.Json.JsonValueKind.String ? t.GetString() : null;
+        })
+        .FirstOrDefault(t => t != null)
+        ?? rpcResponse?.Result?.ToString();
+
+    Console.WriteLine($"[Routing] ← {targetAgent.Card.Name}: {replyText}");
+
+    return Results.Ok(new
+    {
+        agent = targetAgent.Card.Name,
+        endpoint = targetUrl,
+        reply = replyText,
+        rawResult = rpcResponse?.Result
+    });
 });
 
 app.Run();
@@ -210,6 +258,59 @@ async Task<AgentCard?> FetchAgentCardWithRetry(HttpClient http, string baseUrl)
 public record AgentInfo(string Endpoint, AgentCard Card);
 public record StaticAgentConfig(string BaseUrl);
 public record AgentRequest(string RequiredCapability, string Message);
+
+// A2A JSON-RPC リクエスト
+public class A2AJsonRpcRequest
+{
+    [JsonPropertyName("jsonrpc")] public string JsonRpc { get; set; } = "2.0";
+    [JsonPropertyName("id")]      public string Id { get; set; } = "";
+    [JsonPropertyName("method")]  public string Method { get; set; } = "";
+    [JsonPropertyName("params")]  public A2AMessageSendParams? Params { get; set; }
+}
+
+public class A2AMessageSendParams
+{
+    [JsonPropertyName("message")] public A2AMessage? Message { get; set; }
+}
+
+public class A2AMessage
+{
+    [JsonPropertyName("kind")]      public string Kind { get; set; } = "message";
+    [JsonPropertyName("role")]      public string Role { get; set; } = "user";
+    [JsonPropertyName("messageId")] public string MessageId { get; set; } = "";
+    [JsonPropertyName("parts")]     public List<A2ATextPart> Parts { get; set; } = [];
+}
+
+public class A2ATextPart
+{
+    [JsonPropertyName("kind")] public string Kind { get; set; } = "text";
+    [JsonPropertyName("text")] public string Text { get; set; } = "";
+}
+
+// A2A JSON-RPC レスポンス
+public class A2AJsonRpcResponse
+{
+    [JsonPropertyName("jsonrpc")] public string? JsonRpc { get; set; }
+    [JsonPropertyName("id")]      public string? Id { get; set; }
+    [JsonPropertyName("result")]  public A2AMessageResult? Result { get; set; }
+    [JsonPropertyName("error")]   public A2AJsonRpcError? Error { get; set; }
+}
+
+public class A2AMessageResult
+{
+    [JsonPropertyName("role")]      public string? Role { get; set; }
+    [JsonPropertyName("messageId")] public string? MessageId { get; set; }
+    [JsonPropertyName("parts")]     public List<System.Text.Json.JsonElement>? Parts { get; set; }
+    public override string ToString()
+        => Parts != null ? string.Join("", Parts.Select(p =>
+            p.TryGetProperty("text", out var t) ? t.GetString() : "")) : "";
+}
+
+public class A2AJsonRpcError
+{
+    [JsonPropertyName("code")]    public int Code { get; set; }
+    [JsonPropertyName("message")] public string Message { get; set; } = "";
+}
 
 public record AgentCapabilitiesInfo(
     [property: JsonPropertyName("streaming")] bool Streaming,
