@@ -274,17 +274,3 @@ kubectl logs orchestrator-a2a-client-6b6448f696-mrxck
 
 `OrchestratorAgent`は`AgentSample`のOrchestrator、`WeatherAgent`は`AgentSample`のWeatherAgentです。
 どちらもJSON RPCを使用して通信します。
-
-## wip
-
-```bash
-
-kubectl rollout restart deployment a2a-agents
-kubectl rollout restart deployment a2a-dispatcher
-
-kubectl get pods 
-kubectl port-forward a2a-dispatcher-594c65c8cd-xmdlt  7777:8080
-
-kubectl logs -f a2a-dispatcher-58c976cf69-2k52j
-```
-
