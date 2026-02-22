@@ -285,6 +285,10 @@ curl -s http://localhost:8088/.well-known/agent-card.json | jq .
 pkill -f "port-forward svc/simple-agent-svc"
 ```
 
+### AgentCardViewerを起動する
+
+
+
 #### レスポンス例
 
 ```json

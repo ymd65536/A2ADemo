@@ -1,4 +1,7 @@
 using AgentCardViewer.Components;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,6 +17,19 @@ builder.Services.AddHttpClient("dispatcher", client =>
 {
     client.BaseAddress = new Uri(dispatcherUrl);
 });
+
+// OpenTelemetry の設定
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("AgentCardViewer"))
+    .WithTracing(tracing => tracing
+        .AddSource("*")
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddOtlpExporter())
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation()
+        .AddRuntimeInstrumentation()
+        .AddOtlpExporter());
 
 var app = builder.Build();
 

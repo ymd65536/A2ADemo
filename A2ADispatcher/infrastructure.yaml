@@ -132,6 +132,12 @@ spec:
         env:
         - name: DispatcherUrl
           value: "http://a2a-dispatcher-svc"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
         ports:
         - containerPort: 8080
 ---
