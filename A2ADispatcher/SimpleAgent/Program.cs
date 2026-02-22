@@ -9,7 +9,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // OpenTelemetryの設定
 builder.Services.AddOpenTelemetry()
-    .ConfigureResource(r => r.AddService("A2A-Server")) // 名前を変えて識別しやすく
+    .ConfigureResource(r => r.AddService("SimpleAgent")) // 名前を変えて識別しやすく
     .WithTracing(tracing => tracing
         .AddSource("*") // サーバー側の内部ソースをカバー
         .AddAspNetCoreInstrumentation()

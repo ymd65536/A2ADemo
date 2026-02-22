@@ -45,6 +45,13 @@ spec:
       - name: dispatcher
         image: a2a-dispatcher:latest # 先ほどビルドしたイメージ名
         imagePullPolicy: Never
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
         ports:
         - containerPort: 8080
 ---
@@ -81,6 +88,13 @@ spec:
       containers:
       - name: server
         image: a2a-simple-agent:net10
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890" # クライアントと同じ
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"                   # これで疎通を確保
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
         imagePullPolicy: Never
         ports:
         - containerPort: 8080

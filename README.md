@@ -246,14 +246,44 @@ template:
 
 エージェント側のコードで `capabilities.extensions` に能力名を宣言すると、その名前で検索できるようになります。
 
----
-
-### Aspire Dashboardを起動
+### 6.Aspire Dashboardを起動
 
 まずはk8sでAspire Dashboardを起動します。
 
 ```bash
 kubectl apply -f A2ADispatcher/aspire-dashboard.yaml
+```
+
+起動したら、ブラウザで `http://localhost:30080` にアクセスしてください。
+
+```bash
+curl -X POST http://localhost:30010/agent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requiredCapability": "サンプル .NET エージェント",
+    "message": "こんにちは"
+  }'
+```
+
+### 7.片付け
+
+デプロイしたリソースをすべて削除します。
+
+```bash
+cd A2ADispatcher
+kubectl delete -f infrastructure.yaml
+```
+
+Aspire Dashboard もデプロイしている場合は合わせて削除します。
+
+```bash
+kubectl delete -f aspire-dashboard.yaml
+```
+
+削除後、Pod が残っていないことを確認します。
+
+```bash
+kubectl get pods
 ```
 
 ## memo: kubectl
