@@ -1,0 +1,97 @@
+# 1. 権限設定（司令塔がPodのIPを調べるために必要）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: a2a-dispatcher-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+subjects:
+- kind: ServiceAccount
+  name: a2a-dispatcher-sa
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# 2. Dispatcher 本体のデプロイ
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a2a-dispatcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-dispatcher
+  template:
+    metadata:
+      labels:
+        app: a2a-dispatcher
+    spec:
+      serviceAccountName: a2a-dispatcher-sa # ここで権限を紐付け
+      containers:
+      - name: dispatcher
+        image: a2a-dispatcher:latest # 先ほどビルドしたイメージ名
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+---
+# 3. Client(オーケストレーター)が叩くためのサービス
+apiVersion: v1
+kind: Service
+metadata:
+  name: a2a-dispatcher-svc
+spec:
+  selector:
+    app: a2a-dispatcher
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30010 # curl http://localhost:30010/agent でテスト可能
+  type: NodePort
+---
+# 4. A2AServer (Dispatcher に発見してもらう実行側)
+#    ポイント: Pod に app=a2a-agent ラベルを付けることで Dispatcher が Watch で検出する
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a2a-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-agent  # Dispatcher の labelSelector と一致させる
+  template:
+    metadata:
+      labels:
+        app: a2a-agent  # ← Dispatcher が listNamespacedPod で絞り込むラベル
+    spec:
+      containers:
+      - name: server
+        image: a2a-a2a-server:net10
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: a2a-server-svc
+spec:
+  selector:
+    app: a2a-agent
+  ports:
+  - port: 80
+    targetPort: 8080

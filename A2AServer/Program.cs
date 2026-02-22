@@ -21,6 +21,14 @@ builder.Services.AddOpenTelemetry()
         .AddPrometheusExporter());      // Prometheus用の出力を有効化
 
 var app = builder.Build();
+
+// A2A エンドポイント処理の前段で動作する簡易 HTTP リクエストログ用ミドルウェア
+app.Use(async (context, next) =>
+{
+    app.Logger.LogInformation("[HTTP Request] {Method} {Path}", context.Request.Method, context.Request.Path);
+    await next();
+});
+
 app.UseOpenTelemetryPrometheusScrapingEndpoint();
 
 // 1. TaskManager の作成（タスクのライフサイクル管理）
@@ -73,7 +81,10 @@ public class SimpleAgent
             Name = "サンプル .NET エージェント",
             Description = "A2Aプロトコルで通信するデモ用エージェントです。",
             Url = agentUrl,
-            Capabilities = new AgentCapabilities { Streaming = false }
+            Capabilities = new AgentCapabilities {
+                Streaming = false,
+                Extensions = new()
+            }
         });
     }
 }
