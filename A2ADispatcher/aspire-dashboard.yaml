@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aspire-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aspire-dashboard
+  template:
+    metadata:
+      labels:
+        app: aspire-dashboard
+    spec:
+      containers:
+      - name: dashboard
+        image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
+        env:
+        - name: ASPIRE_ALLOW_UNSECURED_TRANSPORT
+          value: "true"
+        - name: DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS
+          value: "true"
+        ports:
+        - containerPort: 18888
+        - containerPort: 18889
+        - containerPort: 18890
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aspire-dashboard-svc
+spec:
+  type: NodePort
+  selector:
+    app: aspire-dashboard
+  ports:
+  - name: http
+    port: 18888
+    targetPort: 18888
+    nodePort: 30088
+  - name: otlp-grpc
+    port: 18889
+    targetPort: 18889
+    appProtocol: grpc
+  - name: otlp-http
+    port: 18890
+    targetPort: 18890

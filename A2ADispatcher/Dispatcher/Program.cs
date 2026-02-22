@@ -3,8 +3,13 @@ using System.Net.Http.Json;
 using System.Text.Json.Serialization;
 using k8s;
 using k8s.Models;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
+
+
 
 // 1. 依存関係の登録
 builder.Services.AddHttpClient();
@@ -22,6 +27,19 @@ if (!builder.Environment.IsDevelopment())
 // エージェントの名簿（BaseURL をキーにして情報を保持）
 var agentCatalog = new ConcurrentDictionary<string, AgentInfo>();
 
+// OpenTelemetryの設定
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("Dispatcher")) // 名前を変えて識別しやすく
+    .WithTracing(tracing => tracing
+        .AddSource("*") // サーバー側の内部ソースをカバー
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddOtlpExporter()) // 環境変数で HTTP/Protobuf に向ける
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation() // サーバーへのリクエスト統計
+        .AddRuntimeInstrumentation()    // CPU/メモリの統計
+        .AddPrometheusExporter());      // Prometheus用の出力を有効化
+
 var app = builder.Build();
 
 // 2. 環境に応じてエージェントの探索方法を切り替え
@@ -37,6 +55,22 @@ else
 }
 
 // 3. ルーティングエンドポイント
+
+// 登録済みエージェント一覧を返す
+app.MapGet("/agents", () =>
+{
+    var agents = agentCatalog.Values.Select(a => new
+    {
+        endpoint = a.Endpoint,
+        name = a.Card.Name,
+        description = a.Card.Description,
+        capabilities = a.Card.GetCapabilityNames(),
+        streaming = a.Card.Capabilities?.Streaming ?? false,
+        extensions = a.Card.Capabilities?.Extensions?.Select(e => e.Name) ?? []
+    });
+    return Results.Ok(agents);
+});
+
 app.MapPost("/agent", async (AgentRequest request, IHttpClientFactory httpClientFactory) =>
 {
     // 能力(Capability)に合致するエージェントを検索
