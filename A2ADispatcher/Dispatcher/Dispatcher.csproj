@@ -10,7 +10,6 @@
     <PackageReference Include="A2A" Version="0.3.3-preview" />
     <PackageReference Include="A2A.AspNetCore" Version="0.3.3-preview" />
     <PackageReference Include="KubernetesClient" Version="18.0.13" />
-    <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
   </ItemGroup>
 
 </Project>
