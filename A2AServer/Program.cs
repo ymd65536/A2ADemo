@@ -22,7 +22,7 @@ builder.Services.AddOpenTelemetry()
 
 var app = builder.Build();
 
-// これを app.MapA2A の「前」に追加してください！
+// A2A エンドポイント処理の前段で動作する簡易 HTTP リクエストログ用ミドルウェア
 app.Use(async (context, next) => {
     Console.WriteLine($"[HTTP Request] {context.Request.Method} {context.Request.Path}");
     await next();
