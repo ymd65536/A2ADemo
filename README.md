@@ -265,7 +265,61 @@ curl -X POST http://localhost:30010/agent \
   }'
 ```
 
-### 7.片付け
+### 7. Agent Card の取得
+
+`simple-agent-svc` は ClusterIP のため、`kubectl port-forward` で一時的に転送してから取得します。
+
+```bash
+kubectl port-forward svc/simple-agent-svc 8088:80
+```
+
+別のターミナルで以下のコマンドを実行して、エージェントカードを取得します。
+
+```
+curl -s http://localhost:8088/.well-known/agent-card.json | jq .
+```
+
+取得後はポートフォワードを終了します。
+
+```bash
+pkill -f "port-forward svc/simple-agent-svc"
+```
+
+#### レスポンス例
+
+```json
+{
+  "name": "サンプル .NET エージェント",
+  "description": "A2Aプロトコルで通信するデモ用エージェントです。",
+  "url": "http://localhost:8088/agent",
+  "iconUrl": null,
+  "provider": null,
+  "version": "",
+  "protocolVersion": "0.3.0",
+  "documentationUrl": null,
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false,
+    "extensions": []
+  },
+  "securitySchemes": null,
+  "security": null,
+  "defaultInputModes": [
+    "text"
+  ],
+  "defaultOutputModes": [
+    "text"
+  ],
+  "skills": [],
+  "supportsAuthenticatedExtendedCard": false,
+  "additionalInterfaces": [],
+  "preferredTransport": "JSONRPC",
+  "signatures": null
+}
+```
+
+### 片付け
 
 デプロイしたリソースをすべて削除します。
 
