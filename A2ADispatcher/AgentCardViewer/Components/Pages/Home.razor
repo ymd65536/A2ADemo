@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @using System.Net.Http.Json
 @inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager NavigationManager
 
 <PageTitle>Agent Card Viewer</PageTitle>
 
@@ -77,6 +78,12 @@
                                 </span>
                             </div>
                         </div>
+                        <div class="card-footer">
+                            <button class="btn btn-sm btn-outline-primary w-100"
+                                    @onclick="() => NavigateToSend(agent.Name)">
+                                ⚡ リクエストを送信
+                            </button>
+                        </div>
                     </div>
                 </div>
             }
@@ -121,4 +128,9 @@
         List<string>? Extensions,
         bool Streaming
     );
+
+    private void NavigateToSend(string agentName)
+    {
+        NavigationManager.NavigateTo($"/send-request?agent={Uri.EscapeDataString(agentName)}");
+    }
 }

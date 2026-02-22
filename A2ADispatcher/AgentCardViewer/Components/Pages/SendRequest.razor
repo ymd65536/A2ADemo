@@ -1,0 +1,162 @@
+@page "/send-request"
+@rendermode InteractiveServer
+@using System.Net.Http.Json
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>リクエスト送信</PageTitle>
+
+<h1 class="mb-4">リクエスト送信</h1>
+
+@if (_agents is null)
+{
+    <p class="text-muted">エージェント情報を読み込み中...</p>
+}
+else if (!_agents.Any())
+{
+    <div class="alert alert-warning">登録済みエージェントがありません。</div>
+}
+else
+{
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label fw-semibold">送信先エージェント</label>
+                <select class="form-select" @bind="_selectedCapability">
+                    <option value="">-- エージェントを選択 --</option>
+                    @foreach (var agent in _agents)
+                    {
+                        <option value="@agent.Name">@agent.Name</option>
+                    }
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label fw-semibold">メッセージ</label>
+                <textarea class="form-control" rows="3" @bind="_message" placeholder="メッセージを入力してください..."></textarea>
+            </div>
+
+            <button class="btn btn-primary" @onclick="SendMessage"
+                    disabled="@(_sending || string.IsNullOrWhiteSpace(_selectedCapability) || string.IsNullOrWhiteSpace(_message))">
+                @if (_sending)
+                {
+                    <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                }
+                送信
+            </button>
+        </div>
+    </div>
+}
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@if (_response is not null)
+{
+    <div class="card border-success">
+        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+            <strong>レスポンス</strong>
+            <small>エージェント: @_response.Agent</small>
+        </div>
+        <div class="card-body">
+            <p class="mb-2"><span class="fw-semibold">エンドポイント:</span> <code>@_response.Endpoint</code></p>
+            <div class="p-3 bg-light rounded">
+                <span class="fw-semibold">返答:</span>
+                <p class="mb-0 mt-1">@_response.Reply</p>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_history.Any())
+{
+    <h5 class="mt-4 mb-2">送信履歴</h5>
+    <div class="list-group">
+        @foreach (var item in _history)
+        {
+            <div class="list-group-item">
+                <div class="d-flex justify-content-between">
+                    <span class="badge bg-secondary">@item.Agent</span>
+                    <small class="text-muted">@item.Time.ToString("HH:mm:ss")</small>
+                </div>
+                <div class="mt-1 small">
+                    <span class="text-muted">送信:</span> @item.Message
+                </div>
+                <div class="mt-1 small">
+                    <span class="text-muted">返答:</span> @item.Reply
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, SupplyParameterFromQuery] public string? Agent { get; set; }
+
+    private List<AgentSummary>? _agents;
+    private string _selectedCapability = "";
+    private string _message = "";
+    private bool _sending = false;
+    private string? _error;
+    private AgentResponse? _response;
+    private List<HistoryItem> _history = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var http = HttpClientFactory.CreateClient("dispatcher");
+            _agents = await http.GetFromJsonAsync<List<AgentSummary>>("/agents");
+            if (!string.IsNullOrWhiteSpace(Agent))
+            {
+                _selectedCapability = Agent;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"エージェント一覧の取得に失敗しました: {ex.Message}";
+        }
+    }
+
+    private async Task SendMessage()
+    {
+        _sending = true;
+        _error = null;
+        _response = null;
+        try
+        {
+            var http = HttpClientFactory.CreateClient("dispatcher");
+            var payload = new { requiredCapability = _selectedCapability, message = _message };
+            var httpResponse = await http.PostAsJsonAsync("/agent", payload);
+
+            if (httpResponse.IsSuccessStatusCode)
+            {
+                _response = await httpResponse.Content.ReadFromJsonAsync<AgentResponse>();
+                if (_response is not null)
+                {
+                    _history.Insert(0, new HistoryItem(_response.Agent, _message, _response.Reply, DateTime.Now));
+                    if (_history.Count > 20) _history.RemoveAt(_history.Count - 1);
+                }
+                _message = "";
+            }
+            else
+            {
+                var body = await httpResponse.Content.ReadAsStringAsync();
+                _error = $"エラー ({(int)httpResponse.StatusCode}): {body}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"送信に失敗しました: {ex.Message}";
+        }
+        finally
+        {
+            _sending = false;
+        }
+    }
+
+    private record AgentSummary(string Endpoint, string Name, string? Description, List<string>? Capabilities, bool Streaming);
+    private record AgentResponse(string Agent, string Endpoint, string Reply);
+    private record HistoryItem(string Agent, string Message, string Reply, DateTime Time);
+}
