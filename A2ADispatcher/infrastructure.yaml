@@ -153,3 +153,32 @@ spec:
   - port: 80
     targetPort: 8080
     nodePort: 30020  # http://localhost:30020 でアクセス
+---
+# 6. EchoAgent (動作確認用の2つ目のエージェント)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-agent
+  template:
+    metadata:
+      labels:
+        app: a2a-agent
+    spec:
+      containers:
+      - name: echo-agent
+        image: a2a-echo-agent:latest
+        imagePullPolicy: Never
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
