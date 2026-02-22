@@ -67,7 +67,7 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: a2a-server
+  name: simple-agent
 spec:
   replicas: 1
   selector:
@@ -80,7 +80,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: a2a-a2a-server:net10
+        image: a2a-simple-agent:net10
         imagePullPolicy: Never
         ports:
         - containerPort: 8080
@@ -88,7 +88,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: a2a-server-svc
+  name: simple-agent-svc
 spec:
   selector:
     app: a2a-agent

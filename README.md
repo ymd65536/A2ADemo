@@ -112,10 +112,10 @@ Dispatcher
 A2AServer と Dispatcher の両方をビルドします。
 
 ```bash
-cd A2AServer
-docker build -t a2a-a2a-server:net10 .
+cd ./A2ADispatcher/SimpleAgent
+docker build -t a2a-simple-agent:net10 .
 
-cd ../A2ADispatcher/Dispatcher
+cd ../Dispatcher
 docker build -t a2a-dispatcher:latest .
 ```
 
@@ -247,6 +247,14 @@ template:
 エージェント側のコードで `capabilities.extensions` に能力名を宣言すると、その名前で検索できるようになります。
 
 ---
+
+### Aspire Dashboardを起動
+
+まずはk8sでAspire Dashboardを起動します。
+
+```bash
+kubectl apply -f A2ADispatcher/aspire-dashboard.yaml
+```
 
 ## memo: kubectl
 
