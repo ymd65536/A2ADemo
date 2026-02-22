@@ -9,7 +9,11 @@ var builder = WebApplication.CreateBuilder(args);
 // 1. 依存関係の登録
 builder.Services.AddHttpClient();
 
+// エージェントの名簿（BaseURL をキーにして情報を保持）をシングルトンとして登録
+builder.Services.AddSingleton(new ConcurrentDictionary<string, AgentInfo>());
+
 // K8s クライアントは K8s 環境 (非 Development) でのみ登録
+// 環境に応じてエージェントの探索サービスを切り替え
 if (!builder.Environment.IsDevelopment())
 {
     builder.Services.AddSingleton<Kubernetes>(sp =>
@@ -17,27 +21,19 @@ if (!builder.Environment.IsDevelopment())
         var config = KubernetesClientConfiguration.InClusterConfig();
         return new Kubernetes(config);
     });
-}
-
-// エージェントの名簿（BaseURL をキーにして情報を保持）
-var agentCatalog = new ConcurrentDictionary<string, AgentInfo>();
-
-var app = builder.Build();
-
-// 2. 環境に応じてエージェントの探索方法を切り替え
-if (app.Environment.IsDevelopment())
-{
-    // 開発時: 設定ファイルの静的リストからエージェントを登録
-    _ = StartStaticAgentsDiscovery(app.Services, agentCatalog, app.Configuration);
+    // 本番 (K8s) 時: Pod 監視でエージェントを動的に登録
+    builder.Services.AddHostedService<K8sAgentDiscoveryService>();
 }
 else
 {
-    // 本番 (K8s) 時: Pod 監視でエージェントを動的に登録
-    _ = StartK8sWatch(app.Services, agentCatalog);
+    // 開発時: 設定ファイルの静的リストからエージェントを登録
+    builder.Services.AddHostedService<StaticAgentDiscoveryService>();
 }
 
-// 3. ルーティングエンドポイント
-app.MapPost("/agent", async (AgentRequest request, IHttpClientFactory httpClientFactory) =>
+var app = builder.Build();
+
+// 2. ルーティングエンドポイント
+app.MapPost("/agent", async (AgentRequest request, IHttpClientFactory httpClientFactory, ConcurrentDictionary<string, AgentInfo> agentCatalog) =>
 {
     // 能力(Capability)に合致するエージェントを検索
     var targetAgent = agentCatalog.Values
@@ -110,148 +106,220 @@ app.MapPost("/agent", async (AgentRequest request, IHttpClientFactory httpClient
 
 app.Run();
 
-// --- ヘルパーメソッド群 ---
+// --- BackgroundService 実装 ---
 
 // 開発時: appsettings.Development.json の Agents:StaticList からエージェントを登録
-async Task StartStaticAgentsDiscovery(
-    IServiceProvider services,
+public class StaticAgentDiscoveryService(
+    IHttpClientFactory httpClientFactory,
     ConcurrentDictionary<string, AgentInfo> catalog,
-    IConfiguration config)
+    IConfiguration config,
+    ILogger<StaticAgentDiscoveryService> logger) : BackgroundService
 {
-    var http = services.GetRequiredService<IHttpClientFactory>().CreateClient();
-    var staticAgents = config.GetSection("Agents:StaticList").Get<List<StaticAgentConfig>>() ?? [];
-
-    if (staticAgents.Count == 0)
+    private const int MaxRetryAttempts = 3;
+    private const int RetryDelayMilliseconds = 2000;
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        Console.WriteLine("[Discovery] Agents:StaticList が設定されていません。appsettings.Development.json を確認してください。");
-        return;
+        var http = httpClientFactory.CreateClient();
+        var staticAgents = config.GetSection("Agents:StaticList").Get<List<StaticAgentConfig>>() ?? [];
+
+        if (staticAgents.Count == 0)
+        {
+            logger.LogWarning("[Discovery] Agents:StaticList が設定されていません。appsettings.Development.json を確認してください。");
+            return;
+        }
+
+        foreach (var agent in staticAgents)
+        {
+            if (stoppingToken.IsCancellationRequested) break;
+
+            logger.LogInformation("[Discovery] 静的エージェントを検索中: {BaseUrl}", agent.BaseUrl);
+            var card = await FetchAgentCardWithRetry(http, agent.BaseUrl, stoppingToken);
+            if (card != null)
+            {
+                catalog[agent.BaseUrl] = new AgentInfo(agent.BaseUrl, card);
+                logger.LogInformation("[Discovery] 登録成功: {Name} ({BaseUrl}) - Capabilities: {Capabilities}",
+                    card.Name, agent.BaseUrl, string.Join(", ", card.GetCapabilityNames()));
+            }
+            else
+            {
+                logger.LogWarning("[Discovery] 登録失敗: {BaseUrl} - エージェントカードを取得できませんでした。", agent.BaseUrl);
+            }
+        }
     }
 
-    foreach (var agent in staticAgents)
+    // エージェントカードを baseUrl から取得（/.well-known/agent.json → /.well-known/agent-card.json の順で試行）
+    private async Task<AgentCard?> FetchAgentCardWithRetry(HttpClient http, string baseUrl, CancellationToken cancellationToken)
     {
-        Console.WriteLine($"[Discovery] 静的エージェントを検索中: {agent.BaseUrl}");
-        var card = await FetchAgentCardWithRetry(http, agent.BaseUrl);
-        if (card != null)
+        var candidatePaths = new[]
         {
-            catalog[agent.BaseUrl] = new AgentInfo(agent.BaseUrl, card);
-            Console.WriteLine($"[Discovery] 登録成功: {card.Name} ({agent.BaseUrl}) - Capabilities: {string.Join(", ", card.GetCapabilityNames())}");
-        }
-        else
+            "/.well-known/agent.json",
+            "/.well-known/agent-card.json"
+        };
+
+        for (int i = 0; i < MaxRetryAttempts; i++)
         {
-            Console.WriteLine($"[Discovery] 登録失敗: {agent.BaseUrl} - エージェントカードを取得できませんでした。");
+            foreach (var path in candidatePaths)
+            {
+                try
+                {
+                    var url = $"{baseUrl.TrimEnd('/')}{path}";
+                    logger.LogInformation("[Discovery] Trying {Url} ...", url);
+                    var card = await http.GetFromJsonAsync<AgentCard>(url, cancellationToken);
+                    if (card != null)
+                    {
+                        logger.LogInformation("[Discovery] エージェントカード取得成功: {Url}", url);
+                        return card;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning("[Discovery] 失敗: {Message}", ex.Message);
+                }
+            }
+            await Task.Delay(RetryDelayMilliseconds, cancellationToken); // 2秒待ってリトライ
         }
+        return null;
     }
 }
 
 // 本番 (K8s) 時: Pod 監視でエージェントを動的に登録
-async Task StartK8sWatch(IServiceProvider services, ConcurrentDictionary<string, AgentInfo> catalog)
+public class K8sAgentDiscoveryService(
+    Kubernetes k8sClient,
+    IHttpClientFactory httpClientFactory,
+    ConcurrentDictionary<string, AgentInfo> catalog,
+    ILogger<K8sAgentDiscoveryService> logger) : BackgroundService
 {
-    var client = services.GetRequiredService<Kubernetes>();
-    var http = services.GetRequiredService<IHttpClientFactory>().CreateClient();
-
-    while (true) // 接続切れ・Watch 期限切れ対策のループ
+    private const int MaxRetryAttempts = 3;
+    private const int RetryDelayMilliseconds = 2000;
+    private const int WatchRetryDelayMilliseconds = 5000;
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        try
-        {
-            // ① まず既存 Pod を一括スキャン（Watch 再起動時に既存 Pod を取りこぼさない）
-            var existingPods = await client.CoreV1.ListNamespacedPodAsync(
-                "default", labelSelector: "app=a2a-agent");
+        var http = httpClientFactory.CreateClient();
 
-            foreach (var pod in existingPods.Items)
-            {
-                var podIp = pod.Status?.PodIP;
-                if (string.IsNullOrEmpty(podIp) || catalog.ContainsKey(podIp)) continue;
-                // Running 状態の Pod のみ対象
-                if (pod.Status?.Phase != "Running") continue;
-
-                var baseUrl = $"http://{podIp}:8080";
-                Console.WriteLine($"[Discovery] 既存 Pod を発見: {podIp}");
-                var card = await FetchAgentCardWithRetry(http, baseUrl);
-                if (card != null)
-                {
-                    catalog[podIp] = new AgentInfo(baseUrl, card);
-                    Console.WriteLine($"[Discovery] Registered (initial scan): {card.Name} ({podIp})");
-                }
-            }
-
-            // ② resourceVersion を記録して Watch を開始（未処理イベントを漏らさない）
-            var resourceVersion = existingPods.Metadata.ResourceVersion;
-            Console.WriteLine($"[Discovery] Watch 開始 (resourceVersion={resourceVersion})");
-
-            var podWatch = client.CoreV1.ListNamespacedPodWithHttpMessagesAsync(
-                "default",
-                labelSelector: "app=a2a-agent",
-                resourceVersion: resourceVersion,
-                watch: true);
-
-            await foreach (var (type, item) in podWatch.WatchAsync<V1Pod, V1PodList>())
-            {
-                var podIp = item.Status?.PodIP;
-                if (string.IsNullOrEmpty(podIp)) continue;
-
-                var baseUrl = $"http://{podIp}:8080";
-
-                if (type == WatchEventType.Added || type == WatchEventType.Modified)
-                {
-                    if (catalog.ContainsKey(podIp)) continue; // 登録済みはスキップ
-                    if (item.Status?.Phase != "Running") continue;
-
-                    var card = await FetchAgentCardWithRetry(http, baseUrl);
-                    if (card != null)
-                    {
-                        catalog[podIp] = new AgentInfo(baseUrl, card);
-                        Console.WriteLine($"[Discovery] Registered ({type}): {card.Name} ({podIp}) - Capabilities: {string.Join(", ", card.GetCapabilityNames())}");
-                    }
-                }
-                else if (type == WatchEventType.Deleted)
-                {
-                    catalog.TryRemove(podIp, out _);
-                    Console.WriteLine($"[Discovery] Removed: {podIp}");
-                }
-            }
-
-            Console.WriteLine("[Discovery] Watch ストリームが終了しました。再起動します...");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Error] Watch failed: {ex.Message}. Retrying in 5s...");
-            await Task.Delay(5000);
-        }
-    }
-}
-
-// エージェントカードを baseUrl から取得（/.well-known/agent.json → /.well-known/agent-card.json の順で試行）
-async Task<AgentCard?> FetchAgentCardWithRetry(HttpClient http, string baseUrl)
-{
-    var candidatePaths = new[]
-    {
-        "/.well-known/agent.json",
-        "/.well-known/agent-card.json"
-    };
-
-    for (int i = 0; i < 3; i++)
-    {
-        foreach (var path in candidatePaths)
+        while (!stoppingToken.IsCancellationRequested) // 接続切れ・Watch 期限切れ対策のループ
         {
             try
             {
-                var url = $"{baseUrl.TrimEnd('/')}{path}";
-                Console.WriteLine($"[Discovery] Trying {url} ...");
-                var card = await http.GetFromJsonAsync<AgentCard>(url);
-                if (card != null)
+                // ① まず既存 Pod を一括スキャン（Watch 再起動時に既存 Pod を取りこぼさない）
+                var existingPods = await k8sClient.CoreV1.ListNamespacedPodAsync(
+                    "default", labelSelector: "app=a2a-agent", cancellationToken: stoppingToken);
+
+                foreach (var pod in existingPods.Items)
                 {
-                    Console.WriteLine($"[Discovery] エージェントカード取得成功: {url}");
-                    return card;
+                    if (stoppingToken.IsCancellationRequested) return;
+
+                    var podIp = pod.Status?.PodIP;
+                    if (string.IsNullOrEmpty(podIp) || catalog.ContainsKey(podIp)) continue;
+                    // Running 状態の Pod のみ対象
+                    if (pod.Status?.Phase != "Running") continue;
+
+                    var baseUrl = $"http://{podIp}:8080";
+                    logger.LogInformation("[Discovery] 既存 Pod を発見: {PodIp}", podIp);
+                    var card = await FetchAgentCardWithRetry(http, baseUrl, stoppingToken);
+                    if (card != null)
+                    {
+                        catalog[podIp] = new AgentInfo(baseUrl, card);
+                        logger.LogInformation("[Discovery] Registered (initial scan): {Name} ({PodIp})", card.Name, podIp);
+                    }
                 }
+
+                // ② resourceVersion を記録して Watch を開始（未処理イベントを漏らさない）
+                var resourceVersion = existingPods.Metadata.ResourceVersion;
+                logger.LogInformation("[Discovery] Watch 開始 (resourceVersion={ResourceVersion})", resourceVersion);
+
+                var podWatch = k8sClient.CoreV1.ListNamespacedPodWithHttpMessagesAsync(
+                    "default",
+                    labelSelector: "app=a2a-agent",
+                    resourceVersion: resourceVersion,
+                    watch: true);
+
+#pragma warning disable CS0618 // WatchAsync(Task<...>) は将来非推奨予定だが、このバージョンでは唯一の利用可能なオーバーロード
+                await foreach (var (type, item) in podWatch.WatchAsync<V1Pod, V1PodList>(
+                    onError: ex => logger.LogError(ex, "[Discovery] Watch エラー"),
+                    cancellationToken: stoppingToken))
+#pragma warning restore CS0618
+                {
+                    var podIp = item.Status?.PodIP;
+                    if (string.IsNullOrEmpty(podIp)) continue;
+
+                    var baseUrl = $"http://{podIp}:8080";
+
+                    if (type == WatchEventType.Added || type == WatchEventType.Modified)
+                    {
+                        if (catalog.ContainsKey(podIp)) continue; // 登録済みはスキップ
+                        if (item.Status?.Phase != "Running") continue;
+
+                        var card = await FetchAgentCardWithRetry(http, baseUrl, stoppingToken);
+                        if (card != null)
+                        {
+                            catalog[podIp] = new AgentInfo(baseUrl, card);
+                            logger.LogInformation("[Discovery] Registered ({Type}): {Name} ({PodIp}) - Capabilities: {Capabilities}",
+                                type, card.Name, podIp, string.Join(", ", card.GetCapabilityNames()));
+                        }
+                    }
+                    else if (type == WatchEventType.Deleted)
+                    {
+                        catalog.TryRemove(podIp, out _);
+                        logger.LogInformation("[Discovery] Removed: {PodIp}", podIp);
+                    }
+                }
+
+                logger.LogInformation("[Discovery] Watch ストリームが終了しました。再起動します...");
+            }
+            catch (OperationCanceledException)
+            {
+                // ホスト停止時の正常終了
+                break;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Discovery] 失敗: {ex.Message}");
+                logger.LogError(ex, "[Error] Watch failed. Retrying in 5s...");
+                await Task.Delay(WatchRetryDelayMilliseconds, stoppingToken);
             }
         }
-        await Task.Delay(2000); // 2秒待ってリトライ
     }
-    return null;
+
+    // エージェントカードを baseUrl から取得（/.well-known/agent.json → /.well-known/agent-card.json の順で試行）
+    private async Task<AgentCard?> FetchAgentCardWithRetry(HttpClient http, string baseUrl, CancellationToken cancellationToken)
+    {
+        var candidatePaths = new[]
+        {
+            "/.well-known/agent.json",
+            "/.well-known/agent-card.json"
+        };
+
+        for (int i = 0; i < MaxRetryAttempts; i++)
+        {
+            foreach (var path in candidatePaths)
+            {
+                try
+                {
+                    var url = $"{baseUrl.TrimEnd('/')}{path}";
+                    logger.LogInformation("[Discovery] Trying {Url} ...", url);
+                    var card = await http.GetFromJsonAsync<AgentCard>(url, cancellationToken);
+                    if (card != null)
+                    {
+                        logger.LogInformation("[Discovery] エージェントカード取得成功: {Url}", url);
+                        return card;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning("[Discovery] 失敗: {Message}", ex.Message);
+                }
+            }
+            await Task.Delay(RetryDelayMilliseconds, cancellationToken); // 2秒待ってリトライ
+        }
+        return null;
+    }
 }
 
 // --- データ構造の定義 ---
