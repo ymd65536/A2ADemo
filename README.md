@@ -256,6 +256,8 @@ kubectl apply -f A2ADispatcher/aspire-dashboard.yaml
 
 起動したら、ブラウザで `http://localhost:30080` にアクセスしてください。
 
+試しに、Dispatcher にリクエストを送ってみます。
+
 ```bash
 curl -X POST http://localhost:30010/agent \
   -H "Content-Type: application/json" \
@@ -284,10 +286,6 @@ curl -s http://localhost:8088/.well-known/agent-card.json | jq .
 ```bash
 pkill -f "port-forward svc/simple-agent-svc"
 ```
-
-### AgentCardViewerを起動する
-
-
 
 #### レスポンス例
 
@@ -322,6 +320,99 @@ pkill -f "port-forward svc/simple-agent-svc"
   "signatures": null
 }
 ```
+
+### AgentCardViewerを起動する
+
+AgentCardViewer は登録済みエージェントのカード情報を一覧表示する Blazor フロントエンドです。
+
+#### コンテナイメージのビルド
+
+```bash
+cd A2ADispatcher/AgentCardViewer
+docker build -t a2a-agent-card-viewer:latest .
+```
+
+#### Kubernetes へのデプロイ
+
+`infrastructure.yaml` に含まれているため、すでにデプロイ済みの場合は apply のみで反映されます。
+
+```bash
+cd A2ADispatcher
+kubectl apply -f infrastructure.yaml
+```
+
+#### アクセス
+
+ブラウザで `http://localhost:30020` を開くと、登録済みエージェントのカードが一覧表示されます。
+
+### エコーエージェントの動作確認
+
+`infrastructure.yaml` には `EchoAgent` も含まれています。デプロイ後、Dispatcher に自動登録されていることを確認します。
+
+```bash
+curl -s http://localhost:30010/agents | jq '[.[] | {name}]'
+# [
+#   { "name": "エコーエージェント" },
+#   { "name": "サンプル .NET エージェント" }
+# ]
+```
+
+エコーエージェントにメッセージを送ります。Dispatcher経由で、エコーエージェントが受け取ったメッセージをそのまま返します。
+
+```bash
+curl -X POST http://localhost:30010/agent \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requiredCapability": "エコーエージェント",
+    "message": "こんにちは"
+  }'
+```
+
+#### レスポンス例
+
+```json
+{
+  "agent": "エコーエージェント",
+  "endpoint": "http://10.42.0.32:8080/agent",
+  "reply": "[Echo] こんにちは",
+  "rawResult": {
+    "role": "agent",
+    "messageId": "199d8c98-9d9a-49fc-a484-5c91b4d767b3",
+    "parts": [
+      { "kind": "text", "text": "[Echo] こんにちは" }
+    ]
+  }
+}
+```
+
+#### エージェント一覧 (`/agents`) のレスポンス例
+
+```bash
+curl -s http://localhost:30010/agents | jq .
+```
+
+```json
+[
+  {
+    "endpoint": "http://10.42.0.32:8080",
+    "name": "エコーエージェント",
+    "description": "受け取ったメッセージをそのまま返すエコーエージェントです。",
+    "capabilities": ["エコーエージェント"],
+    "streaming": false,
+    "extensions": []
+  },
+  {
+    "endpoint": "http://10.42.0.24:8080",
+    "name": "サンプル .NET エージェント",
+    "description": "A2Aプロトコルで通信するデモ用エージェントです。",
+    "capabilities": ["サンプル .NET エージェント"],
+    "streaming": false,
+    "extensions": []
+  }
+]
+```
+
+AgentCardViewer (`http://localhost:30020`) を更新すると、2つのエージェントカードが表示されます。
 
 ### 片付け
 
