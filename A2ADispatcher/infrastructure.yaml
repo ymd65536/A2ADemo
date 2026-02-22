@@ -109,3 +109,41 @@ spec:
   ports:
   - port: 80
     targetPort: 8080
+---
+# 5. Agent Card Viewer (Blazor フロントエンド)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-card-viewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-card-viewer
+  template:
+    metadata:
+      labels:
+        app: agent-card-viewer
+    spec:
+      containers:
+      - name: viewer
+        image: a2a-agent-card-viewer:latest
+        imagePullPolicy: Never
+        env:
+        - name: DispatcherUrl
+          value: "http://a2a-dispatcher-svc"
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-card-viewer-svc
+spec:
+  selector:
+    app: agent-card-viewer
+  type: NodePort
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30020  # http://localhost:30020 でアクセス

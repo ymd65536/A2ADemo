@@ -55,6 +55,22 @@ else
 }
 
 // 3. ルーティングエンドポイント
+
+// 登録済みエージェント一覧を返す
+app.MapGet("/agents", () =>
+{
+    var agents = agentCatalog.Values.Select(a => new
+    {
+        endpoint = a.Endpoint,
+        name = a.Card.Name,
+        description = a.Card.Description,
+        capabilities = a.Card.GetCapabilityNames(),
+        streaming = a.Card.Capabilities?.Streaming ?? false,
+        extensions = a.Card.Capabilities?.Extensions?.Select(e => e.Name) ?? []
+    });
+    return Results.Ok(agents);
+});
+
 app.MapPost("/agent", async (AgentRequest request, IHttpClientFactory httpClientFactory) =>
 {
     // 能力(Capability)に合致するエージェントを検索

@@ -1,0 +1,124 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using System.Net.Http.Json
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>Agent Card Viewer</PageTitle>
+
+<h1 class="mb-4">Agent Card Viewer</h1>
+
+<div class="mb-3">
+    <button class="btn btn-primary" @onclick="LoadAgents" disabled="@_loading">
+        @if (_loading)
+        {
+            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+        }
+        更新
+    </button>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@if (_agents is not null)
+{
+    @if (!_agents.Any())
+    {
+        <p class="text-muted">登録済みエージェントがありません。</p>
+    }
+    else
+    {
+        <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-4">
+            @foreach (var agent in _agents)
+            {
+                <div class="col">
+                    <div class="card h-100 shadow-sm">
+                        <div class="card-header">
+                            <strong>@agent.Name</strong>
+                        </div>
+                        <div class="card-body">
+                            @if (!string.IsNullOrWhiteSpace(agent.Description))
+                            {
+                                <p class="card-text text-muted small">@agent.Description</p>
+                            }
+                            <p class="mb-1 small"><span class="fw-semibold">エンドポイント:</span> <code>@agent.Endpoint</code></p>
+
+                            @if (agent.Capabilities?.Any() == true)
+                            {
+                                <div class="mt-2">
+                                    <span class="fw-semibold small">能力:</span>
+                                    <div class="mt-1">
+                                        @foreach (var cap in agent.Capabilities)
+                                        {
+                                            <span class="badge bg-primary me-1 mb-1">@cap</span>
+                                        }
+                                    </div>
+                                </div>
+                            }
+
+                            @if (agent.Extensions?.Any() == true)
+                            {
+                                <div class="mt-2">
+                                    <span class="fw-semibold small">エクステンション:</span>
+                                    <div class="mt-1">
+                                        @foreach (var ext in agent.Extensions)
+                                        {
+                                            <span class="badge bg-info text-dark me-1 mb-1">@ext</span>
+                                        }
+                                    </div>
+                                </div>
+                            }
+
+                            <div class="mt-2 small">
+                                <span class="badge @(agent.Streaming ? "bg-success" : "bg-light text-dark border")">
+                                    ストリーミング: @(agent.Streaming ? "有" : "無")
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    private List<AgentSummary>? _agents;
+    private bool _loading = false;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAgents();
+    }
+
+    private async Task LoadAgents()
+    {
+        _loading = true;
+        _error = null;
+        try
+        {
+            var http = HttpClientFactory.CreateClient("dispatcher");
+            _agents = await http.GetFromJsonAsync<List<AgentSummary>>("/agents");
+        }
+        catch (Exception ex)
+        {
+            _error = $"Dispatcher への接続に失敗しました: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private record AgentSummary(
+        string Endpoint,
+        string Name,
+        string? Description,
+        List<string>? Capabilities,
+        List<string>? Extensions,
+        bool Streaming
+    );
+}
