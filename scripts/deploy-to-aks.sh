@@ -30,7 +30,7 @@ log "=== Azure ログイン確認 ==="
 if ! az account show &>/dev/null; then
   az login
 fi
-az account show --query "{Subscription:name, ID:id}" -o table
+az account show --query "{Subscription:name}" -o table
 
 # ---------------------------------------------------------------
 # 2. リソースグループ作成
@@ -141,10 +141,12 @@ wait_rollout() {
   log "Rollout 待機: ${deploy} (最大 5 分)"
   if ! kubectl rollout status deployment/${deploy} --timeout=5m; then
     log "[ERROR] ${deploy} の起動に失敗しました。詳細を表示します。"
+    local app_label
+    app_label=$(kubectl get deployment "${deploy}" -o jsonpath='{.spec.selector.matchLabels.app}' 2>/dev/null || echo "${deploy}")
     echo "--- kubectl get pods ---"
-    kubectl get pods -l "app=$(kubectl get deployment ${deploy} -o jsonpath='{.spec.selector.matchLabels.app}' 2>/dev/null || echo ${deploy})" -o wide
+    kubectl get pods -l "app=${app_label}" -o wide
     echo "--- kubectl describe pod ---"
-    kubectl describe pod -l "app=$(kubectl get deployment ${deploy} -o jsonpath='{.spec.selector.matchLabels.app}' 2>/dev/null || echo ${deploy})" | tail -40
+    kubectl describe pod -l "app=${app_label}" | tail -40
     echo "--- kubectl logs (直近 50 行) ---"
     kubectl logs deployment/${deploy} --tail=50 2>/dev/null || true
     echo ""

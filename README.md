@@ -663,9 +663,111 @@ curl -X POST "http://${DISPATCHER_IP}/agent" \
 # K8s リソースをすべて削除
 kubectl delete -f A2ADispatcher/aks-infrastructure.yaml
 kubectl delete -f k8s/otel-collector.yaml
+kubectl delete -f k8s/secret-provider-class.yaml
 kubectl delete secret appinsights-secret
 
 # Azure リソース一式を削除（リソースグループごと）
+az group delete --name a2a-demo-rg --yes --no-wait
+```
+
+---
+
+## Step6: Azure Key Vault でシークレットを安全に管理する
+
+Step5 では `kubectl create secret` で接続文字列を K8s に直接登録しましたが、etcd への保存は base64 エンコードのみで暗号化されていません。  
+このステップでは **Azure Key Vault + Secrets Store CSI Driver + Workload Identity** を使い、接続文字列を Key Vault で一元管理します。
+
+### 仕組み
+
+```
+Key Vault（接続文字列を保管）
+  ↓ Secrets Store CSI Driver（azure-keyvault-secrets-provider アドオン）
+SecretProviderClass → K8s Secret に自動同期
+  ↓ secretKeyRef（OTel Collector 側のコード変更なし）
+OTel Collector Pod（環境変数として注入）
+```
+
+Pod が CSI ボリュームをマウントするタイミングで Key Vault からシークレットが取得され、K8s Secret に同期されます。  
+Pod を再起動するたびに最新の値が反映されるため、**Key Vault でシークレットを更新するだけでローテーションが完結**します。
+
+### ファイル構成
+
+| ファイル | 説明 |
+|---|---|
+| `scripts/setup-keyvault.sh` | Key Vault 作成・CSI Driver 有効化・Workload Identity 設定を一括実行 |
+| `k8s/secret-provider-class.yaml` | SecretProviderClass のテンプレート（スクリプトが自動適用） |
+| `k8s/otel-collector.yaml` | CSI ボリュームマウントと Workload Identity ラベルを追加済み |
+
+### Step5 との差異
+
+| 項目 | Step5（kubectl secret） | Step6（Key Vault） |
+|---|---|---|
+| 保管場所 | AKS etcd（base64のみ） | Azure Key Vault（暗号化） |
+| ローテーション | 手動で `kubectl create secret` を再実行 | Key Vault でシークレット更新 → Pod 再起動で反映 |
+| アクセス制御 | K8s RBAC のみ | Azure RBAC + Key Vault アクセスポリシー |
+| 監査ログ | なし | Key Vault のアクセスログ（Azure Monitor） |
+
+### 1. セットアップスクリプトの実行
+
+Step5 の `setup-otel.sh` を **先に実行済みであること**（Application Insights が存在すること）が前提です。
+
+```bash
+RESOURCE_GROUP=a2a-demo-rg \
+AKS_CLUSTER=a2a-demo-aks \
+ACR_NAME=<ACR名> \
+APP_INSIGHTS_NAME=a2a-demo-appinsights \
+KEY_VAULT_NAME=<グローバル一意な3-24文字の名前> \
+  ./scripts/setup-keyvault.sh
+```
+
+スクリプトは以下の順序で処理します。
+
+1. Key Vault 作成（`--enable-rbac-authorization true`）
+2. Application Insights 接続文字列を Key Vault に登録
+3. AKS に OIDC Issuer / Workload Identity / CSI Driver アドオンを有効化
+4. User-Assigned Managed Identity 作成
+5. Managed Identity に **Key Vault Secrets User** ロールを付与
+6. K8s ServiceAccount 作成（Managed Identity と紐付け）
+7. Federated Credential 作成（K8s SA ↔ Managed Identity を連携）
+8. SecretProviderClass を適用
+9. OTel Collector を再デプロイ
+
+### 2. 同期確認
+
+Pod 起動後、Key Vault から K8s Secret に同期されていることを確認します。
+
+```bash
+# K8s Secret が作成されていることを確認
+kubectl get secret appinsights-secret
+
+# 中身を確認（Key Vault の値と一致するはず）
+kubectl get secret appinsights-secret \
+  -o jsonpath='{.data.connection-string}' | base64 --decode
+```
+
+### 3. シークレットのローテーション
+
+Key Vault でシークレットを更新した場合、Pod を再起動するだけで反映されます。
+
+```bash
+# Key Vault でシークレットを更新
+az keyvault secret set \
+  --vault-name <KEY_VAULT_NAME> \
+  --name appinsights-connection-string \
+  --value "<新しい接続文字列>"
+
+# Pod を再起動して最新値を反映
+kubectl rollout restart deployment/otel-collector
+```
+
+### 4. 片付け
+
+```bash
+kubectl delete -f k8s/otel-collector.yaml
+kubectl delete -f k8s/secret-provider-class.yaml
+kubectl delete serviceaccount otel-collector-sa
+
+# Azure リソースごと削除する場合
 az group delete --name a2a-demo-rg --yes --no-wait
 ```
 

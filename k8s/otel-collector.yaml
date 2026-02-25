@@ -1,9 +1,13 @@
 # ============================================================
 # OpenTelemetry Collector → Azure Monitor / Application Insights
 # ============================================================
-# 事前準備:
+# 通常セットアップ（kubectl create secret を使う場合）:
 #   kubectl create secret generic appinsights-secret \
 #     --from-literal=connection-string="InstrumentationKey=...;IngestionEndpoint=..."
+#
+# Key Vault セットアップ（推奨）:
+#   scripts/setup-keyvault.sh を実行すると自動構成されます。
+#   Key Vault のシークレットが CSI Driver 経由で K8s Secret に同期されます。
 # ============================================================
 
 # 1. OTel Collector の設定（ConfigMap）
@@ -71,7 +75,9 @@ spec:
     metadata:
       labels:
         app: otel-collector
+        azure.workload.identity/use: "true"  # Workload Identity を有効化
     spec:
+      serviceAccountName: otel-collector-sa  # Workload Identity 用 SA（setup-keyvault.sh が作成）
       containers:
       - name: otel-collector
         # Azure Monitor exporter を含む contrib イメージを使用
@@ -94,6 +100,10 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /conf
+        # Key Vault CSI ボリューム（マウントすることで K8s Secret への同期がトリガーされる）
+        - name: keyvault-secrets
+          mountPath: /mnt/secrets
+          readOnly: true
         resources:
           requests:
             cpu: "100m"
@@ -117,6 +127,14 @@ spec:
       - name: config
         configMap:
           name: otel-collector-config
+      # Key Vault Secrets Store CSI Driver ボリューム
+      # このボリュームをマウントすることで SecretProviderClass が K8s Secret を同期する
+      - name: keyvault-secrets
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: appinsights-keyvault
 ---
 # 3. OTel Collector Service（各 Pod がここへ OTLP を送信）
 apiVersion: v1
