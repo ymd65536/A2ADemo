@@ -648,7 +648,50 @@ curl -X POST "http://${DISPATCHER_IP}/agent" \
   -d '{"requiredCapability": "サンプル .NET エージェント", "message": "こんにちは"}'
 ```
 
-### 3. Azure Portal での確認方法
+### 3. OTel Collector のテレメトリ受信確認
+
+#### OTel Collector のログを確認する
+
+```bash
+kubectl logs deployment/otel-collector --tail=30
+```
+
+テストリクエスト送信後、以下のようなログが出力されれば OTel Collector がトレースを受信して Application Insights へ転送しています。
+
+```
+2026-02-25T20:41:23.702Z  info  Traces  {"otelcol.component.id": "debug", ..., "resource spans": 2, "spans": 8}
+```
+
+| ログのキー | 意味 |
+|---|---|
+| `resource spans` | 受信したリソース（サービス）の数 |
+| `spans` | 受信したスパン（操作）の合計数 |
+
+#### OTel Collector の起動状態を確認する
+
+```bash
+kubectl get pods -l app=otel-collector
+```
+
+`READY 1/1`・`STATUS Running` であれば正常です。  
+`CrashLoopBackOff` や `ContainerCreating` のままの場合は以下で原因を確認します。
+
+```bash
+kubectl describe pod -l app=otel-collector | grep -A 20 "Events:"
+kubectl logs deployment/otel-collector
+```
+
+#### `appinsights-secret` の内容を確認する
+
+```bash
+kubectl get secret appinsights-secret \
+  -o jsonpath='{.data.connection-string}' | base64 --decode
+# InstrumentationKey=...;IngestionEndpoint=https://...
+```
+
+接続文字列が空の場合、`setup-otel.sh` が正常完了していません。再実行してください。
+
+### 4. Azure Portal での確認方法
 
 | 確認したい内容 | 場所 |
 |---|---|
@@ -657,7 +700,27 @@ curl -X POST "http://${DISPATCHER_IP}/agent" \
 | サービス間の依存関係マップ | Application Insights → 調査 > **アプリケーション マップ** |
 | ログ・クエリ | Application Insights → 監視 > **ログ** |
 
-### 4. 片付け（AKS リソース削除）
+> **補足:** テスト送信から Application Insights にトレースが反映されるまで **1〜2 分**かかる場合があります。
+
+#### Application Insights でのクエリ例（Kusto Query Language）
+
+トランザクション検索 → **ログ** から以下のクエリを実行できます。
+
+```kusto
+// 直近 30 分のリクエスト一覧
+requests
+| where timestamp > ago(30m)
+| project timestamp, name, duration, resultCode
+| order by timestamp desc
+
+// サービス間の依存呼び出し
+dependencies
+| where timestamp > ago(30m)
+| project timestamp, name, target, duration, success
+| order by timestamp desc
+```
+
+### 5. 片付け（AKS リソース削除）
 
 ```bash
 # K8s リソースをすべて削除

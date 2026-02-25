@@ -10,6 +10,14 @@
 #   Key Vault のシークレットが CSI Driver 経由で K8s Secret に同期されます。
 # ============================================================
 
+# 0. ServiceAccount（setup-otel.sh / setup-keyvault.sh 両方で共用）
+#    setup-keyvault.sh 実行時は Workload Identity のアノテーションが上書きされます。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-sa
+  namespace: default
+---
 # 1. OTel Collector の設定（ConfigMap）
 apiVersion: v1
 kind: ConfigMap
@@ -100,10 +108,6 @@ spec:
         volumeMounts:
         - name: config
           mountPath: /conf
-        # Key Vault CSI ボリューム（マウントすることで K8s Secret への同期がトリガーされる）
-        - name: keyvault-secrets
-          mountPath: /mnt/secrets
-          readOnly: true
         resources:
           requests:
             cpu: "100m"
@@ -127,14 +131,13 @@ spec:
       - name: config
         configMap:
           name: otel-collector-config
-      # Key Vault Secrets Store CSI Driver ボリューム
-      # このボリュームをマウントすることで SecretProviderClass が K8s Secret を同期する
-      - name: keyvault-secrets
-        csi:
-          driver: secrets-store.csi.k8s.io
-          readOnly: true
-          volumeAttributes:
-            secretProviderClass: appinsights-keyvault
+      # Key Vault CSI ボリューム（setup-keyvault.sh 実行後に kubectl apply で有効化）
+      # - name: keyvault-secrets
+      #   csi:
+      #     driver: secrets-store.csi.k8s.io
+      #     readOnly: true
+      #     volumeAttributes:
+      #       secretProviderClass: appinsights-keyvault
 ---
 # 3. OTel Collector Service（各 Pod がここへ OTLP を送信）
 apiVersion: v1
