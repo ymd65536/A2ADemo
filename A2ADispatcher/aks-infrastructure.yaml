@@ -1,0 +1,216 @@
+# ============================================================
+# AKS 用 A2ADispatcher インフラ定義
+# 使用前に以下の変数を実際の値に置き換えてください:
+#   <ACR_NAME>  → Azure Container Registry のログインサーバー名
+#               例: myacr.azurecr.io
+# ============================================================
+
+# 1. 権限設定（Dispatcher が Pod の IP を調べるために必要）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: a2a-dispatcher-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+subjects:
+- kind: ServiceAccount
+  name: a2a-dispatcher-sa
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# 2. Dispatcher 本体のデプロイ
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a2a-dispatcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-dispatcher
+  template:
+    metadata:
+      labels:
+        app: a2a-dispatcher
+    spec:
+      serviceAccountName: a2a-dispatcher-sa
+      containers:
+      - name: dispatcher
+        image: <ACR_NAME>/a2a-dispatcher:latest
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector-svc:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+# 3. Dispatcher 用 LoadBalancer サービス（AKS では NodePort より LoadBalancer を推奨）
+apiVersion: v1
+kind: Service
+metadata:
+  name: a2a-dispatcher-svc
+spec:
+  selector:
+    app: a2a-dispatcher
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# 4. SimpleAgent（Dispatcher に発見される実行側）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-agent
+  template:
+    metadata:
+      labels:
+        app: a2a-agent
+    spec:
+      containers:
+      - name: server
+        image: <ACR_NAME>/a2a-simple-agent:latest
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector-svc:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-agent-svc
+spec:
+  selector:
+    app: a2a-agent
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# 5. Agent Card Viewer（Blazor フロントエンド）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-card-viewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-card-viewer
+  template:
+    metadata:
+      labels:
+        app: agent-card-viewer
+    spec:
+      containers:
+      - name: viewer
+        image: <ACR_NAME>/a2a-agent-card-viewer:latest
+        imagePullPolicy: Always
+        env:
+        - name: DispatcherUrl
+          value: "http://a2a-dispatcher-svc"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector-svc:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-card-viewer-svc
+spec:
+  selector:
+    app: agent-card-viewer
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# 6. EchoAgent（動作確認用の 2 つ目のエージェント）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-agent
+  template:
+    metadata:
+      labels:
+        app: a2a-agent
+    spec:
+      containers:
+      - name: echo-agent
+        image: <ACR_NAME>/a2a-echo-agent:latest
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector-svc:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"

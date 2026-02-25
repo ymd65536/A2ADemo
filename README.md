@@ -457,6 +457,240 @@ kubectl rollout restart deployment orchestrator-a2a-client
 kubectl logs orchestrator-a2a-client-6b6448f696-mrxck
 ```
 
+## Step4: Azure Kubernetes Service (AKS) に A2ADispatcher をデプロイする
+
+ローカルの Kubernetes ではなく、Azure Kubernetes Service (AKS) 上に A2ADispatcher 一式をデプロイします。  
+イメージは Azure Container Registry (ACR) に保管し、AKS からプルします。
+
+### 前提条件
+
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) がインストール済みであること
+- `az login` で Azure にサインイン済みであること
+- `kubectl` がインストール済みであること
+
+### ファイル構成
+
+| ファイル | 説明 |
+|---|---|
+| `A2ADispatcher/aks-infrastructure.yaml` | AKS 用マニフェスト（`infrastructure.yaml` の AKS 対応版） |
+| `scripts/deploy-to-aks.sh` | リソース作成からデプロイまでを一括実行するスクリプト |
+
+#### ローカル版との主な差異
+
+| 項目 | ローカル版 | AKS 版 |
+|---|---|---|
+| イメージビルド | `docker build` | `az acr build`（ACR 上でクラウドビルド） |
+| `imagePullPolicy` | `Never` | `Always` |
+| イメージ参照 | `a2a-dispatcher:latest` | `<ACR>.azurecr.io/a2a-dispatcher:latest` |
+| Dispatcher 公開 | `NodePort: 30010` | `LoadBalancer` |
+| AgentCardViewer 公開 | `NodePort: 30020` | `LoadBalancer` |
+
+### 1. デプロイスクリプトの実行
+
+変数を指定してスクリプトを実行します（デフォルト値を使う場合は省略可）。
+
+```bash
+RESOURCE_GROUP=a2a-demo-rg \
+ACR_NAME=<グローバル一意な小文字英数字名> \
+AKS_CLUSTER=a2a-demo-aks \
+LOCATION=japaneast \
+  ./scripts/deploy-to-aks.sh
+```
+
+スクリプトは以下の順序で処理します。
+
+1. リソースグループ作成
+2. ACR 作成
+3. `az acr build` で 4 つのイメージをクラウドビルド＆プッシュ
+4. リソースプロバイダー登録（`Microsoft.ContainerService` 等）
+5. AKS クラスター作成（`--attach-acr` で ACR と連携）
+6. `kubectl` 認証情報の取得
+7. マニフェストを適用
+
+> **注意:** `az acr build` はビルドコンテキストを Azure へ送信して ACR 上でビルドするため、ローカルの Docker デーモンは不要です。
+
+### 2. デプロイ完了の確認
+
+> **補足: なぜ `kubectl get pods` で AKS の Pod が見えるのか**
+>
+> `az aks get-credentials` を実行すると、AKS クラスターの接続情報が `~/.kube/config` に書き込まれ、`kubectl` の向き先（current-context）が自動的に AKS に切り替わります。  
+> そのため、以降の `kubectl` コマンドはすべて AKS クラスターに対して実行されます。
+>
+> ```bash
+> # 現在の向き先を確認
+> kubectl config current-context   # → a2a-demo-aks
+>
+> # 登録済みのクラスター一覧と向き先を確認
+> kubectl config get-contexts
+>
+> # ローカル Kubernetes（Docker Desktop など）に戻す場合
+> kubectl config use-context docker-desktop
+> ```
+
+```bash
+kubectl get pods -o wide
+kubectl get services
+```
+
+以下のような出力が得られれば正常です。
+
+```
+NAME                                 READY   STATUS    RESTARTS   AGE
+a2a-dispatcher-xxxxxxxxxx-xxxxx      1/1     Running   0          1m
+agent-card-viewer-xxxxxxxxxx-xxxxx   1/1     Running   0          1m
+echo-agent-xxxxxxxxxx-xxxxx          1/1     Running   0          1m
+simple-agent-xxxxxxxxxx-xxxxx        1/1     Running   0          1m
+```
+
+### 3. 動作確認
+
+`a2a-dispatcher-svc` の `EXTERNAL-IP` を確認します。
+
+```bash
+kubectl get svc a2a-dispatcher-svc
+```
+
+外部 IP が割り当てられたらリクエストを送ります。
+
+```bash
+DISPATCHER_IP=$(kubectl get svc a2a-dispatcher-svc \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+curl -X POST "http://${DISPATCHER_IP}/agent" \
+  -H "Content-Type: application/json" \
+  -d '{"requiredCapability": "サンプル .NET エージェント", "message": "こんにちは"}'
+```
+
+```json
+{
+  "agent": "サンプル .NET エージェント",
+  "endpoint": "http://10.x.x.x:8080/agent",
+  "reply": "[A2A応答] あなたは「こんにちは」と言いましたね。"
+}
+```
+
+### トラブルシューティング
+
+#### ImagePullBackOff が発生する場合
+
+ACR の RBAC が AKS ノードに伝搬していない可能性があります。
+
+```bash
+# ACR と AKS を再アタッチ
+az aks update \
+  --resource-group <RESOURCE_GROUP> \
+  --name <AKS_CLUSTER> \
+  --attach-acr <ACR_NAME>
+```
+
+#### MissingSubscriptionRegistration エラーが発生する場合
+
+```bash
+az provider register --namespace Microsoft.ContainerService --wait
+az provider register --namespace Microsoft.Compute --wait
+az provider register --namespace Microsoft.Network --wait
+```
+
+---
+
+## Step5: OpenTelemetry → Azure Application Insights でトレースを確認する
+
+各エージェントが送信する OpenTelemetry テレメトリを Azure Application Insights で可視化します。
+
+### 構成図
+
+```
+各 Pod (Dispatcher / SimpleAgent / EchoAgent / AgentCardViewer)
+  ↓ OTLP HTTP (port 4318)
+otel-collector-svc  ← k8s/otel-collector.yaml
+  ↓ azuremonitor exporter
+Application Insights
+  ↓
+Log Analytics ワークスペース
+```
+
+### ファイル構成
+
+| ファイル | 説明 |
+|---|---|
+| `k8s/otel-collector.yaml` | OTel Collector の Deployment / Service / ConfigMap |
+| `scripts/setup-otel.sh` | Application Insights 作成からデプロイまでを一括実行するスクリプト |
+
+### 1. セットアップスクリプトの実行
+
+```bash
+RESOURCE_GROUP=a2a-demo-rg \
+ACR_NAME=<ACR名> \
+AKS_CLUSTER=a2a-demo-aks \
+APP_INSIGHTS_NAME=a2a-demo-appinsights \
+  ./scripts/setup-otel.sh
+```
+
+スクリプトは以下の順序で処理します。
+
+1. リソースプロバイダー登録（`microsoft.insights` 等）
+2. Log Analytics ワークスペース作成（プロビジョニング完了まで待機）
+3. Application Insights 作成
+4. 接続文字列を Kubernetes Secret (`appinsights-secret`) に登録
+5. OTel Collector をデプロイ
+6. 全エージェントを再起動（OTel エンドポイントを `otel-collector-svc:4318` に切替）
+
+### 2. 動作確認
+
+テストリクエストを送信してトレースを生成します。
+
+```bash
+DISPATCHER_IP=$(kubectl get svc a2a-dispatcher-svc \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+curl -X POST "http://${DISPATCHER_IP}/agent" \
+  -H "Content-Type: application/json" \
+  -d '{"requiredCapability": "サンプル .NET エージェント", "message": "こんにちは"}'
+```
+
+### 3. Azure Portal での確認方法
+
+| 確認したい内容 | 場所 |
+|---|---|
+| リクエストのトレース（End-to-End） | Application Insights → 調査 > **トランザクション検索** |
+| リアルタイム監視 | Application Insights → 調査 > **ライブメトリクス** |
+| サービス間の依存関係マップ | Application Insights → 調査 > **アプリケーション マップ** |
+| ログ・クエリ | Application Insights → 監視 > **ログ** |
+
+### 4. 片付け（AKS リソース削除）
+
+```bash
+# K8s リソースをすべて削除
+kubectl delete -f A2ADispatcher/aks-infrastructure.yaml
+kubectl delete -f k8s/otel-collector.yaml
+kubectl delete secret appinsights-secret
+
+# Azure リソース一式を削除（リソースグループごと）
+az group delete --name a2a-demo-rg --yes --no-wait
+```
+
+## memo
+
+```bash
+kubectl get svc
+```
+
+```bash
+kubectl get pods
+```
+
+```bash
+kubectl rollout restart deployment a2a-server
+```
+
+```bash
+kubectl rollout restart deployment orchestrator-a2a-client
+```
+
+```bash
+kubectl logs orchestrator-a2a-client-6b6448f696-mrxck
+```
+
 ## memo
 
 `OrchestratorAgent`は`AgentSample`のOrchestrator、`WeatherAgent`は`AgentSample`のWeatherAgentです。
