@@ -215,7 +215,9 @@ EOF
 # 12. OTel Collector を Key Vault 対応マニフェストで再デプロイ
 # ---------------------------------------------------------------
 log "=== OTel Collector を再デプロイ（Key Vault 対応版）==="
-kubectl apply -f "${REPO_ROOT}/k8s/otel-collector.yaml"
+# otel-collector-keyvault.yaml は CSI ボリュームマウントが有効な Key Vault 専用マニフェスト
+# Pod 起動時に CSI Driver が Key Vault からシークレットを取得し K8s Secret を自動生成する
+kubectl apply -f "${REPO_ROOT}/k8s/otel-collector-keyvault.yaml"
 kubectl rollout restart deployment/otel-collector
 kubectl rollout status deployment/otel-collector --timeout=5m
 

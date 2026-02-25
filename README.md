@@ -613,7 +613,7 @@ Log Analytics ワークスペース
 
 | ファイル | 説明 |
 |---|---|
-| `k8s/otel-collector.yaml` | OTel Collector の Deployment / Service / ConfigMap |
+| `k8s/otel-collector.yaml` | OTel Collector の ServiceAccount / Deployment / Service / ConfigMap（Key Vault なし版） |
 | `scripts/setup-otel.sh` | Application Insights 作成からデプロイまでを一括実行するスクリプト |
 
 ### 1. セットアップスクリプトの実行
@@ -726,7 +726,6 @@ dependencies
 # K8s リソースをすべて削除
 kubectl delete -f A2ADispatcher/aks-infrastructure.yaml
 kubectl delete -f k8s/otel-collector.yaml
-kubectl delete -f k8s/secret-provider-class.yaml
 kubectl delete secret appinsights-secret
 
 # Azure リソース一式を削除（リソースグループごと）
@@ -758,8 +757,17 @@ Pod を再起動するたびに最新の値が反映されるため、**Key Vaul
 | ファイル | 説明 |
 |---|---|
 | `scripts/setup-keyvault.sh` | Key Vault 作成・CSI Driver 有効化・Workload Identity 設定を一括実行 |
-| `k8s/secret-provider-class.yaml` | SecretProviderClass のテンプレート（スクリプトが自動適用） |
-| `k8s/otel-collector.yaml` | CSI ボリュームマウントと Workload Identity ラベルを追加済み |
+| `k8s/otel-collector-keyvault.yaml` | CSI ボリュームマウント有効・Workload Identity 対応の OTel Collector マニフェスト |
+
+> **補足: `otel-collector.yaml` との違い**  
+> `k8s/otel-collector.yaml`（Step5 用）は CSI ボリュームなしのシンプル版です。  
+> `k8s/otel-collector-keyvault.yaml`（Step6 用）は以下の点が異なります。
+>
+> | 項目 | otel-collector.yaml | otel-collector-keyvault.yaml |
+> |---|---|---|
+> | ServiceAccount | ファイル内に定義 | スクリプトが Workload Identity アノテーション付きで管理 |
+> | CSI ボリューム | なし | `secrets-store.csi.k8s.io` でマウント |
+> | Secret 生成タイミング | `kubectl create secret` で事前作成 | Pod 起動時に CSI Driver が Key Vault から自動生成 |
 
 ### Step5 との差異
 
@@ -790,23 +798,33 @@ KEY_VAULT_NAME=<グローバル一意な3-24文字の名前> \
 3. AKS に OIDC Issuer / Workload Identity / CSI Driver アドオンを有効化
 4. User-Assigned Managed Identity 作成
 5. Managed Identity に **Key Vault Secrets User** ロールを付与
-6. K8s ServiceAccount 作成（Managed Identity と紐付け）
+6. K8s ServiceAccount (`otel-collector-sa`) に Workload Identity アノテーションを付与
+   - Step5 で `otel-collector.yaml` が SA を作成済みのため、`kubectl annotate` で上書き
 7. Federated Credential 作成（K8s SA ↔ Managed Identity を連携）
 8. SecretProviderClass を適用
-9. OTel Collector を再デプロイ
+9. `k8s/otel-collector-keyvault.yaml` で OTel Collector を再デプロイ
+   - CSI ボリュームのマウント時に Key Vault からシークレットが取得され K8s Secret が自動生成される
 
 ### 2. 同期確認
 
 Pod 起動後、Key Vault から K8s Secret に同期されていることを確認します。
 
 ```bash
-# K8s Secret が作成されていることを確認
+# Pod が Running になっていることを確認
+kubectl get pods -l app=otel-collector
+
+# K8s Secret が CSI Driver によって自動生成されていることを確認
 kubectl get secret appinsights-secret
 
 # 中身を確認（Key Vault の値と一致するはず）
 kubectl get secret appinsights-secret \
   -o jsonpath='{.data.connection-string}' | base64 --decode
+# InstrumentationKey=...;IngestionEndpoint=https://...
 ```
+
+> **補足: なぜ Pod 起動後に Secret が生成されるのか**  
+> Secrets Store CSI Driver は Pod が CSI ボリュームをマウントするタイミングで Key Vault へアクセスし、`SecretProviderClass` の `secretObjects` 定義に従って K8s Secret を自動生成します。  
+> そのため、`kubectl apply` 直後ではなく **Pod が `Running` になってはじめて** `appinsights-secret` が存在します。
 
 ### 3. シークレットのローテーション
 
@@ -823,11 +841,20 @@ az keyvault secret set \
 kubectl rollout restart deployment/otel-collector
 ```
 
+再起動後、再度シークレットの内容を確認して新しい値に更新されていることを確認します。
+
+```bash
+kubectl get pods -o wide
+kubectl get services
+```
+
 ### 4. 片付け
 
 ```bash
-kubectl delete -f k8s/otel-collector.yaml
-kubectl delete -f k8s/secret-provider-class.yaml
+# Key Vault 対応版の K8s リソースを削除
+kubectl delete -f k8s/otel-collector-keyvault.yaml
+kubectl delete secretproviderclass appinsights-keyvault
+kubectl delete secret appinsights-secret --ignore-not-found=true
 kubectl delete serviceaccount otel-collector-sa
 
 # Azure リソースごと削除する場合

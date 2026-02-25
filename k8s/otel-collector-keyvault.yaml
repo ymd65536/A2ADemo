@@ -1,0 +1,160 @@
+# ============================================================
+# OpenTelemetry Collector（Key Vault 対応版）
+# ============================================================
+# 前提: scripts/setup-keyvault.sh を実行済みであること
+#   - Azure Key Vault が作成済み
+#   - AKS に OIDC Issuer / Workload Identity / CSI Driver が有効化済み
+#   - Managed Identity + Federated Credential が作成済み
+#   - SecretProviderClass (appinsights-keyvault) が適用済み
+#   - otel-collector-sa ServiceAccount に Workload Identity アノテーション付与済み
+#
+# 適用コマンド:
+#   kubectl apply -f k8s/otel-collector-keyvault.yaml
+#   kubectl rollout status deployment/otel-collector --timeout=5m
+# ============================================================
+
+# 1. OTel Collector の設定（ConfigMap）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  collector.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+      memory_limiter:
+        limit_mib: 256
+        check_interval: 5s
+
+    exporters:
+      azuremonitor:
+        connection_string: "${APPLICATIONINSIGHTS_CONNECTION_STRING}"
+      debug:
+        verbosity: basic
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [azuremonitor, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [azuremonitor]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [azuremonitor]
+---
+# 2. OTel Collector Deployment（Key Vault CSI ボリュームマウントあり）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+        azure.workload.identity/use: "true"  # Workload Identity を有効化
+    spec:
+      serviceAccountName: otel-collector-sa  # setup-keyvault.sh が Workload Identity アノテーション付きで作成
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.120.0
+        args:
+        - "--config=/conf/collector.yaml"
+        env:
+        - name: APPLICATIONINSIGHTS_CONNECTION_STRING
+          valueFrom:
+            secretKeyRef:
+              name: appinsights-secret
+              key: connection-string
+        ports:
+        - containerPort: 4317   # OTLP gRPC
+          name: otlp-grpc
+        - containerPort: 4318   # OTLP HTTP
+          name: otlp-http
+        - containerPort: 8888   # Prometheus メトリクス（Collector 自身）
+          name: metrics
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+        # Key Vault CSI ボリューム:
+        # このボリュームをマウントすることで SecretProviderClass が K8s Secret (appinsights-secret) に同期する
+        - name: keyvault-secrets
+          mountPath: /mnt/secrets
+          readOnly: true
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: config
+        configMap:
+          name: otel-collector-config
+      # Key Vault Secrets Store CSI Driver ボリューム
+      # Pod がこのボリュームをマウントするタイミングで Key Vault からシークレットを取得し
+      # SecretProviderClass の secretObjects 定義に従って K8s Secret を自動生成・同期する
+      - name: keyvault-secrets
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: appinsights-keyvault
+---
+# 3. OTel Collector Service（各 Pod がここへ OTLP を送信）
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-svc
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+  - name: metrics
+    port: 8888
+    targetPort: 8888
