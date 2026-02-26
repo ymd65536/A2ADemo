@@ -1,0 +1,367 @@
+# ============================================================
+# GKE 用 A2ADispatcher インフラ定義
+# 使用前に以下の変数を実際の値に置き換えてください:
+#   <GAR_REGION>      → Artifact Registry のリージョン
+#                       例: asia-northeast1
+#   <GCP_PROJECT_ID>  → GCP プロジェクト ID
+#                       例: my-gcp-project-123
+#   <GAR_REPO_NAME>   → Artifact Registry のリポジトリ名
+#                       例: a2a-demo
+#
+# イメージ参照形式:
+#   <GAR_REGION>-docker.pkg.dev/<GCP_PROJECT_ID>/<GAR_REPO_NAME>/<IMAGE>:latest
+#
+# 事前準備:
+#   1. gcloud container clusters get-credentials <CLUSTER_NAME> --region <REGION>
+#   2. gcloud auth configure-docker <GAR_REGION>-docker.pkg.dev
+#   3. kubectl apply -f gke-infrastructure.yaml
+# ============================================================
+
+# 1. Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: a2a-demo
+---
+# 2. 権限設定（Dispatcher が Pod の IP を調べるために必要）
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: a2a-dispatcher-sa
+  namespace: a2a-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: a2a-demo
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: read-pods
+  namespace: a2a-demo
+subjects:
+- kind: ServiceAccount
+  name: a2a-dispatcher-sa
+  namespace: a2a-demo
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# 3. OpenTelemetry Collector 用 Kubernetes ServiceAccount
+#    Workload Identity で GCP SA にバインドし、Cloud Trace/Monitoring へ認証
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: a2a-otel-sa
+  namespace: a2a-demo
+  annotations:
+    iam.gke.io/gcp-service-account: a2a-otel-sa@<GCP_PROJECT_ID>.iam.gserviceaccount.com
+---
+# 4. OpenTelemetry Collector 設定
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: a2a-demo
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    exporters:
+      googlecloud:
+        project: <GCP_PROJECT_ID>
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [googlecloud]
+        metrics:
+          receivers: [otlp]
+          exporters: [googlecloud]
+---
+# 5. OpenTelemetry Collector Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: a2a-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      serviceAccountName: a2a-otel-sa
+      containers:
+      - name: collector
+        image: otel/opentelemetry-collector-contrib:latest
+        args: ["--config=/conf/config.yaml"]
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+        ports:
+        - containerPort: 4317  # OTLP gRPC
+        - containerPort: 4318  # OTLP HTTP
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+      volumes:
+      - name: config
+        configMap:
+          name: otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-svc
+  namespace: a2a-demo
+spec:
+  selector:
+    app: otel-collector
+  type: ClusterIP
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    appProtocol: grpc
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+---
+# 6. Dispatcher 本体のデプロイ
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: a2a-dispatcher
+  namespace: a2a-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-dispatcher
+  template:
+    metadata:
+      labels:
+        app: a2a-dispatcher
+    spec:
+      serviceAccountName: a2a-dispatcher-sa
+      containers:
+      - name: dispatcher
+        image: <GAR_REGION>-docker.pkg.dev/<GCP_PROJECT_ID>/<GAR_REPO_NAME>/a2a-dispatcher:latest
+        imagePullPolicy: Always
+        env:
+        - name: KUBERNETES_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector-svc:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+# 7. Dispatcher 用 LoadBalancer サービス
+#    GKE では type: LoadBalancer で Cloud Load Balancer が自動作成される
+apiVersion: v1
+kind: Service
+metadata:
+  name: a2a-dispatcher-svc
+  namespace: a2a-demo
+spec:
+  selector:
+    app: a2a-dispatcher
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# 8. SimpleAgent（Dispatcher に発見される実行側）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-agent
+  namespace: a2a-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-agent
+  template:
+    metadata:
+      labels:
+        app: a2a-agent
+    spec:
+      containers:
+      - name: server
+        image: <GAR_REGION>-docker.pkg.dev/<GCP_PROJECT_ID>/<GAR_REPO_NAME>/a2a-simple-agent:latest
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector-svc:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-agent-svc
+  namespace: a2a-demo
+spec:
+  selector:
+    app: a2a-agent
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# 9. Agent Card Viewer（Blazor フロントエンド）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-card-viewer
+  namespace: a2a-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-card-viewer
+  template:
+    metadata:
+      labels:
+        app: agent-card-viewer
+    spec:
+      containers:
+      - name: viewer
+        image: <GAR_REGION>-docker.pkg.dev/<GCP_PROJECT_ID>/<GAR_REPO_NAME>/a2a-agent-card-viewer:latest
+        imagePullPolicy: Always
+        env:
+        - name: DispatcherUrl
+          value: "http://a2a-dispatcher-svc"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector-svc:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+---
+# Agent Card Viewer 用 LoadBalancer サービス（外部公開）
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-card-viewer-svc
+  namespace: a2a-demo
+spec:
+  selector:
+    app: agent-card-viewer
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# 7. EchoAgent（動作確認用の 2 つ目のエージェント）
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-agent
+  namespace: a2a-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: a2a-agent
+  template:
+    metadata:
+      labels:
+        app: a2a-agent
+    spec:
+      containers:
+      - name: echo-agent
+        image: <GAR_REGION>-docker.pkg.dev/<GCP_PROJECT_ID>/<GAR_REPO_NAME>/a2a-echo-agent:latest
+        imagePullPolicy: Always
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector-svc:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5

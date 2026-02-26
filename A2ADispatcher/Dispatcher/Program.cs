@@ -9,7 +9,10 @@ using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
-
+// Pod を監視するネームスペース（環境変数で上書き可能、デフォルトは "default"）
+var k8sNamespace = builder.Configuration["KUBERNETES_NAMESPACE"]
+    ?? Environment.GetEnvironmentVariable("KUBERNETES_NAMESPACE")
+    ?? "default";
 
 // 1. 依存関係の登録
 builder.Services.AddHttpClient();
@@ -55,6 +58,9 @@ else
 }
 
 // 3. ルーティングエンドポイント
+
+// ヘルスチェックエンドポイント
+app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
 
 // 登録済みエージェント一覧を返す
 app.MapGet("/agents", () =>
