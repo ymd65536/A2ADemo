@@ -54,7 +54,7 @@ if (app.Environment.IsDevelopment())
 else
 {
     // 本番 (K8s) 時: Pod 監視でエージェントを動的に登録
-    _ = StartK8sWatch(app.Services, agentCatalog);
+    _ = StartK8sWatch(app.Services, agentCatalog, k8sNamespace);
 }
 
 // 3. ルーティングエンドポイント
@@ -184,7 +184,7 @@ async Task StartStaticAgentsDiscovery(
 }
 
 // 本番 (K8s) 時: Pod 監視でエージェントを動的に登録
-async Task StartK8sWatch(IServiceProvider services, ConcurrentDictionary<string, AgentInfo> catalog)
+async Task StartK8sWatch(IServiceProvider services, ConcurrentDictionary<string, AgentInfo> catalog, string k8sNamespace = "default")
 {
     var client = services.GetRequiredService<Kubernetes>();
     var http = services.GetRequiredService<IHttpClientFactory>().CreateClient();
@@ -195,7 +195,7 @@ async Task StartK8sWatch(IServiceProvider services, ConcurrentDictionary<string,
         {
             // ① まず既存 Pod を一括スキャン（Watch 再起動時に既存 Pod を取りこぼさない）
             var existingPods = await client.CoreV1.ListNamespacedPodAsync(
-                "default", labelSelector: "app=a2a-agent");
+                k8sNamespace, labelSelector: "app=a2a-agent");
 
             foreach (var pod in existingPods.Items)
             {
@@ -219,7 +219,7 @@ async Task StartK8sWatch(IServiceProvider services, ConcurrentDictionary<string,
             Console.WriteLine($"[Discovery] Watch 開始 (resourceVersion={resourceVersion})");
 
             var podWatch = client.CoreV1.ListNamespacedPodWithHttpMessagesAsync(
-                "default",
+                k8sNamespace,
                 labelSelector: "app=a2a-agent",
                 resourceVersion: resourceVersion,
                 watch: true);

@@ -414,6 +414,49 @@ curl -s http://localhost:30010/agents | jq .
 
 AgentCardViewer (`http://localhost:30020`) を更新すると、2つのエージェントカードが表示されます。
 
+### 注意点: Namespace と /healthz エンドポイント
+
+#### Dispatcher が監視する Namespace
+
+Dispatcher の `StartK8sWatch` はデフォルトで `default` namespace の Pod を監視します。  
+`infrastructure.yaml` は namespace を指定していないため `default` namespace にデプロイされ、そのまま動作します。
+
+**default 以外の namespace を使う場合**は、Dispatcher Deployment に `KUBERNETES_NAMESPACE` 環境変数を追加してください。
+
+```yaml
+env:
+- name: KUBERNETES_NAMESPACE
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.namespace  # Downward API でネームスペースを自動取得
+```
+
+また、対象 namespace に対して `a2a-dispatcher-sa` が Pod を `list`/`watch` できる RBAC 権限も必要です。
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: <your-namespace>
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+```
+
+#### エージェント Pod の /healthz エンドポイント
+
+readiness probe を設定する場合、各エージェントの `Program.cs` に `/healthz` エンドポイントが必要です。  
+`infrastructure.yaml` は readiness probe を設定していないため、このエンドポイントがなくても動作します。
+
+GKE など readiness probe を使う環境にデプロイする場合は、**Dispatcher / SimpleAgent / EchoAgent** それぞれの `Program.cs` に以下を追加してください。
+
+```csharp
+// app.UseOpenTelemetryPrometheusScrapingEndpoint(); の後、app.MapA2A() の前に追加
+app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
+```
+
 ### 片付け
 
 デプロイしたリソースをすべて削除します。
@@ -589,6 +632,46 @@ az aks update \
 az provider register --namespace Microsoft.ContainerService --wait
 az provider register --namespace Microsoft.Compute --wait
 az provider register --namespace Microsoft.Network --wait
+```
+
+#### `/agents` が空になる（エージェントが登録されない）場合
+
+Dispatcher が監視する namespace が実際のデプロイ先 namespace と一致していないと、Pod Watch が `Forbidden` エラーになりエージェントが登録されません。
+
+```bash
+# Dispatcher のログで Forbidden エラーを確認
+kubectl logs deployment/a2a-dispatcher | grep -E 'Error|Watch|Forbidden'
+# [Error] Watch failed: pods is forbidden: ... in the namespace "default"
+```
+
+`aks-infrastructure.yaml` は namespace を指定しないため `default` namespace にデプロイされ、デフォルトのまま動作します。  
+独自の namespace を使う場合は Dispatcher Deployment に `KUBERNETES_NAMESPACE` 環境変数を追加し、対応する RBAC (Role / RoleBinding) も設定してください（詳細は Step3 の「注意点」参照）。
+
+```bash
+# 暫定対処: 環境変数を直接 patch
+kubectl set env deployment/a2a-dispatcher KUBERNETES_NAMESPACE=<your-namespace>
+```
+
+#### readiness probe で Pod が Ready にならない場合
+
+ readiness probe に `/healthz` を設定しているにもかかわらず 404 が返る場合、エージェントのコードに `/healthz` エンドポイントが存在しません。
+
+```bash
+# ログで probe が届いているか確認
+kubectl logs deployment/simple-agent | grep healthz
+# [HTTP Request] GET /healthz  ← 届いているが 404 を返している
+```
+
+各エージェントの `Program.cs` に以下を追加し、再ビルド・再デプロイしてください（詳細は Step3 の「注意点」参照）。
+
+```csharp
+app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
+```
+
+```bash
+# 再デプロイ後に Pod を強制再起動
+kubectl rollout restart deployment/simple-agent deployment/echo-agent
+kubectl rollout status deployment/simple-agent deployment/echo-agent
 ```
 
 ---
