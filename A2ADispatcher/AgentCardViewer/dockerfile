@@ -2,6 +2,10 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY ["AgentCardViewer.csproj", "./"]
 RUN dotnet restore
+COPY ["libman.json", "./"]
+RUN dotnet tool install -g Microsoft.Web.LibraryManager.Cli
+ENV PATH="${PATH}:/root/.dotnet/tools"
+RUN libman restore
 COPY . .
 RUN dotnet publish -c Release -o /app
 

@@ -254,7 +254,9 @@ template:
 kubectl apply -f A2ADispatcher/aspire-dashboard.yaml
 ```
 
-起動したら、ブラウザで `http://localhost:30080` にアクセスしてください。
+起動したら、ブラウザで `http://localhost:30088` にアクセスしてください。
+
+> **Note**: Aspire Dashboardは `NodePort: 30088` で公開されます。クラスタ内のアプリケーションは `http://aspire-dashboard-svc:18890` でOTLPエンドポイントに接続します。
 
 試しに、Dispatcher にリクエストを送ってみます。
 
@@ -325,10 +327,20 @@ pkill -f "port-forward svc/simple-agent-svc"
 
 AgentCardViewer は登録済みエージェントのカード情報を一覧表示する Blazor フロントエンドです。
 
-#### コンテナイメージのビルド
+#### 前提: LibManでBootstrapをインストール
+
+Agent Card Viewerは Bootstrap を使用しています。ビルド前に libman でインストールしてください。
 
 ```bash
 cd A2ADispatcher/AgentCardViewer
+libman restore
+```
+
+> **Note**: `libman.json` にBootstrapの設定が含まれています。Dockerビルド時は自動的に `libman restore` が実行されます。`wwwroot/lib/` は `.gitignore` で除外されているため、リポジトリにはコミットされません。
+
+#### コンテナイメージのビルド
+
+```bash
 docker build -t a2a-agent-card-viewer:latest .
 ```
 
