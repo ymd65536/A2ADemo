@@ -30,6 +30,8 @@ app.Use(async (context, next) =>
 
 app.UseOpenTelemetryPrometheusScrapingEndpoint();
 
+app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
+
 // 1. TaskManager の作成
 var taskManager = new TaskManager();
 

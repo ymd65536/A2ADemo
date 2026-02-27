@@ -414,6 +414,49 @@ curl -s http://localhost:30010/agents | jq .
 
 AgentCardViewer (`http://localhost:30020`) を更新すると、2つのエージェントカードが表示されます。
 
+### 注意点: Namespace と /healthz エンドポイント
+
+#### Dispatcher が監視する Namespace
+
+Dispatcher の `StartK8sWatch` はデフォルトで `default` namespace の Pod を監視します。  
+`infrastructure.yaml` は namespace を指定していないため `default` namespace にデプロイされ、そのまま動作します。
+
+**default 以外の namespace を使う場合**は、Dispatcher Deployment に `KUBERNETES_NAMESPACE` 環境変数を追加してください。
+
+```yaml
+env:
+- name: KUBERNETES_NAMESPACE
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.namespace  # Downward API でネームスペースを自動取得
+```
+
+また、対象 namespace に対して `a2a-dispatcher-sa` が Pod を `list`/`watch` できる RBAC 権限も必要です。
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: <your-namespace>
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+```
+
+#### エージェント Pod の /healthz エンドポイント
+
+readiness probe を設定する場合、各エージェントの `Program.cs` に `/healthz` エンドポイントが必要です。  
+`infrastructure.yaml` は readiness probe を設定していないため、このエンドポイントがなくても動作します。
+
+GKE など readiness probe を使う環境にデプロイする場合は、**Dispatcher / SimpleAgent / EchoAgent** それぞれの `Program.cs` に以下を追加してください。
+
+```csharp
+// app.UseOpenTelemetryPrometheusScrapingEndpoint(); の後、app.MapA2A() の前に追加
+app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
+```
+
 ### 片付け
 
 デプロイしたリソースをすべて削除します。
@@ -589,6 +632,46 @@ az aks update \
 az provider register --namespace Microsoft.ContainerService --wait
 az provider register --namespace Microsoft.Compute --wait
 az provider register --namespace Microsoft.Network --wait
+```
+
+#### `/agents` が空になる（エージェントが登録されない）場合
+
+Dispatcher が監視する namespace が実際のデプロイ先 namespace と一致していないと、Pod Watch が `Forbidden` エラーになりエージェントが登録されません。
+
+```bash
+# Dispatcher のログで Forbidden エラーを確認
+kubectl logs deployment/a2a-dispatcher | grep -E 'Error|Watch|Forbidden'
+# [Error] Watch failed: pods is forbidden: ... in the namespace "default"
+```
+
+`aks-infrastructure.yaml` は namespace を指定しないため `default` namespace にデプロイされ、デフォルトのまま動作します。  
+独自の namespace を使う場合は Dispatcher Deployment に `KUBERNETES_NAMESPACE` 環境変数を追加し、対応する RBAC (Role / RoleBinding) も設定してください（詳細は Step3 の「注意点」参照）。
+
+```bash
+# 暫定対処: 環境変数を直接 patch
+kubectl set env deployment/a2a-dispatcher KUBERNETES_NAMESPACE=<your-namespace>
+```
+
+#### readiness probe で Pod が Ready にならない場合
+
+ readiness probe に `/healthz` を設定しているにもかかわらず 404 が返る場合、エージェントのコードに `/healthz` エンドポイントが存在しません。
+
+```bash
+# ログで probe が届いているか確認
+kubectl logs deployment/simple-agent | grep healthz
+# [HTTP Request] GET /healthz  ← 届いているが 404 を返している
+```
+
+各エージェントの `Program.cs` に以下を追加し、再ビルド・再デプロイしてください（詳細は Step3 の「注意点」参照）。
+
+```csharp
+app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
+```
+
+```bash
+# 再デプロイ後に Pod を強制再起動
+kubectl rollout restart deployment/simple-agent deployment/echo-agent
+kubectl rollout status deployment/simple-agent deployment/echo-agent
 ```
 
 ---
@@ -887,3 +970,243 @@ kubectl logs orchestrator-a2a-client-6b6448f696-mrxck
 
 `OrchestratorAgent`は`AgentSample`のOrchestrator、`WeatherAgent`は`AgentSample`のWeatherAgentです。
 どちらもJSON RPCを使用して通信します。
+
+---
+
+## Step7: Google Kubernetes Engine (GKE) に A2ADispatcher をデプロイする
+
+ローカル Kubernetes / AKS ではなく、**Google Kubernetes Engine (GKE)** 上に A2ADispatcher 一式をデプロイします。  
+イメージは **Artifact Registry (GAR)** に保管し、**Cloud Build** でクラウドビルドします。  
+OTel テレメトリは **OTel Collector → Cloud Trace / Cloud Monitoring** で可視化します。
+
+### 構成図
+
+```
+各 Pod (Dispatcher / SimpleAgent / EchoAgent / AgentCardViewer)
+  ↓ OTLP HTTP (port 4318)
+otel-collector-svc  ← gke-infrastructure.yaml
+  ↓ googlecloud exporter (Workload Identity)
+Cloud Trace / Cloud Monitoring
+```
+
+### ファイル構成
+
+| ファイル | 説明 |
+|---|---|
+| `A2ADispatcher/gke-infrastructure.yaml` | GKE 用マニフェスト（Namespace / RBAC / OTel Collector / 全エージェント） |
+| `scripts/deploy-to-gke.sh` | リソース作成からデプロイまでを一括実行するスクリプト |
+
+#### AKS 版との主な差異
+
+| 項目 | AKS 版 | GKE 版 |
+|---|---|---|
+| コンテナレジストリ | Azure Container Registry | Artifact Registry |
+| イメージビルド | `az acr build` | Cloud Build (`gcloud builds submit`) |
+| クラスター | AKS | GKE (Autopilot 非対応・Standard モード) |
+| OTel バックエンド | Application Insights | Cloud Trace / Cloud Monitoring |
+| OTel 認証 | Managed Identity | Workload Identity |
+| Namespace | `default` | `a2a-demo` |
+| Dispatcher 公開 | `LoadBalancer` | `LoadBalancer` |
+| AgentCardViewer 公開 | `LoadBalancer` | `LoadBalancer` |
+
+### 前提条件
+
+- [Google Cloud CLI (`gcloud`)](https://cloud.google.com/sdk/docs/install) がインストール済みであること
+  - macOS の場合は `brew install --cask google-cloud-sdk` を推奨（Python 3.14 互換版）
+- `gcloud auth login` で GCP にログイン済みであること
+- `gcloud config set project <PROJECT_ID>` でプロジェクトを設定済みであること
+- `kubectl` がインストール済みであること
+
+### 1. デプロイスクリプトの実行
+
+```bash
+# asia-northeast2（大阪）リージョンを指定して実行
+GKE_REGION=asia-northeast2 \
+GAR_REGION=asia-northeast2 \
+  ./scripts/deploy-to-gke.sh
+```
+
+主な変数一覧（省略時はデフォルト値を使用）:
+
+| 変数 | デフォルト | 説明 |
+|---|---|---|
+| `GKE_CLUSTER` | `a2a-demo-gke` | GKE クラスター名 |
+| `GKE_REGION` | `asia-northeast1` | GKE クラスターのリージョン |
+| `GAR_REGION` | `asia-northeast1` | Artifact Registry のリージョン |
+| `GAR_REPO_NAME` | `a2a-demo` | Artifact Registry リポジトリ名 |
+| `NODE_MACHINE_TYPE` | `e2-medium` | ノードのマシンタイプ |
+| `USE_SPOT` | `true` | スポットインスタンスを使用する |
+| `DISK_TYPE` | `pd-balanced` | ノードのディスクタイプ |
+| `DISK_SIZE` | `30` | ノードのディスクサイズ (GB) |
+| `NAMESPACE` | `a2a-demo` | Kubernetes Namespace |
+| `FORCE_BUILD` | `false` | `true` にすると既存イメージでもビルドし直す |
+
+スクリプトは以下の順序で処理します。
+
+1. Python 互換性チェック（`CLOUDSDK_PYTHON` フォールバック）
+2. gcloud ログイン状態の確認
+3. `gcloud config get-value project` でプロジェクト ID を自動取得
+4. 必要な API を有効化（Container / Artifact Registry / Cloud Build / Cloud Trace 等）
+5. Artifact Registry リポジトリ作成
+6. Docker 認証情報の設定
+7. Cloud Build でイメージをビルド＆プッシュ（既存イメージはスキップ、`FORCE_BUILD=true` で再ビルド）
+8. GKE クラスター作成（失敗時は自動削除、STOCKOUT 時はリージョン変更を案内）
+9. Artifact Registry への IAM 権限付与（`--condition=None`）
+10. `gke-gcloud-auth-plugin` 自動インストール
+11. kubectl 認証情報の取得
+12. OTel 用 GCP サービスアカウント作成 + Workload Identity バインド（Cloud Trace / Monitoring 権限付与）
+13. マニフェスト適用（プレースホルダーを `sed` で置換）
+14. 各 Deployment の rollout 完了待機
+
+### 2. デプロイ完了の確認
+
+```bash
+kubectl get pods -n a2a-demo
+```
+
+正常にデプロイされると以下のような出力が得られます。
+
+```
+NAME                                 READY   STATUS    RESTARTS   AGE
+a2a-dispatcher-xxxxxxxxxx-xxxxx      1/1     Running   0          1m
+agent-card-viewer-xxxxxxxxxx-xxxxx   1/1     Running   0          1m
+echo-agent-xxxxxxxxxx-xxxxx          1/1     Running   0          1m
+otel-collector-xxxxxxxxxx-xxxxx      1/1     Running   0          1m
+simple-agent-xxxxxxxxxx-xxxxx        1/1     Running   0          1m
+```
+
+### 3. 動作確認
+
+外部 IP を確認します。
+
+```bash
+kubectl get svc -n a2a-demo
+```
+
+```
+NAME                    TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)
+a2a-dispatcher-svc      LoadBalancer   ...            <DISPATCHER_IP>  80:...
+agent-card-viewer-svc   LoadBalancer   ...            <VIEWER_IP>      80:...
+otel-collector-svc      ClusterIP      ...            <none>           4317/TCP,4318/TCP
+simple-agent-svc        ClusterIP      ...            <none>           80/TCP
+```
+
+#### Dispatcher へリクエストを送る
+
+```bash
+DISPATCHER_IP=$(kubectl get svc a2a-dispatcher-svc -n a2a-demo \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# ヘルスチェック
+curl http://${DISPATCHER_IP}/healthz
+
+# エージェント一覧
+curl http://${DISPATCHER_IP}/agents
+
+# エコーエージェントにメッセージを送る
+curl -X POST http://${DISPATCHER_IP}/agent \
+  -H "Content-Type: application/json" \
+  -d '{"requiredCapability": "エコーエージェント", "message": "こんにちは"}'
+```
+
+#### Agent Card Viewer にアクセスする
+
+ブラウザで以下の URL を開きます。
+
+```
+http://<VIEWER_IP>
+```
+
+#### SimpleAgent / EchoAgent に直接アクセスする（ClusterIP のため port-forward が必要）
+
+```bash
+kubectl port-forward svc/simple-agent-svc 8080:80 -n a2a-demo
+# → http://localhost:8080/.well-known/agent.json
+```
+
+### 4. イメージの再ビルド
+
+コードを変更した場合は `FORCE_BUILD=true` を付けて再実行します。
+
+```bash
+GKE_REGION=asia-northeast2 \
+GAR_REGION=asia-northeast2 \
+FORCE_BUILD=true \
+  ./scripts/deploy-to-gke.sh
+```
+
+特定 Pod だけ再起動する場合は `kubectl rollout restart` を使います。
+
+```bash
+kubectl rollout restart deployment/simple-agent deployment/echo-agent -n a2a-demo
+kubectl rollout status deployment/simple-agent deployment/echo-agent -n a2a-demo
+```
+
+### 5. Cloud Trace でトレースを確認する
+
+テストリクエスト送信後、[Cloud Trace コンソール](https://console.cloud.google.com/traces) でトレースを確認できます。  
+テレメトリが反映されるまで 1〜2 分かかる場合があります。
+
+### トラブルシューティング
+
+#### GCE_STOCKOUT エラーが発生する場合
+
+指定リージョンに空きがありません。別のリージョンを試してください。
+
+```bash
+GKE_REGION=asia-northeast1 GAR_REGION=asia-northeast1 ./scripts/deploy-to-gke.sh
+GKE_REGION=us-central1     GAR_REGION=us-central1     ./scripts/deploy-to-gke.sh
+```
+
+#### SSD_TOTAL_GB クォータ超過が発生する場合
+
+ディスクサイズを削減します。
+
+```bash
+DISK_TYPE=pd-balanced DISK_SIZE=30 GKE_REGION=... ./scripts/deploy-to-gke.sh
+```
+
+#### Pod が Ready にならない (`/healthz` 404) 場合
+
+エージェントのコードに `/healthz` エンドポイントが存在するか確認してください。
+
+```bash
+# ログで GET /healthz が届いているか確認
+kubectl logs deployment/simple-agent -n a2a-demo --tail=20
+```
+
+`/healthz` が存在しない場合は各 `Program.cs` に以下を追加してください（Dispatcher / SimpleAgent / EchoAgent）。
+
+```csharp
+app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
+```
+
+追加後、`FORCE_BUILD=true` で再デプロイします。
+
+#### `gke-gcloud-auth-plugin` が見つからない場合
+
+スクリプトが自動インストールを試みますが、失敗する場合は手動でインストールしてください。
+
+```bash
+gcloud components install gke-gcloud-auth-plugin
+```
+
+### 6. 片付け
+
+```bash
+# K8s リソースをすべて削除
+kubectl delete -f A2ADispatcher/gke-infrastructure.yaml
+
+# GKE クラスターを削除
+gcloud container clusters delete a2a-demo-gke \
+  --region asia-northeast2 --quiet
+
+# Artifact Registry リポジトリを削除
+gcloud artifacts repositories delete a2a-demo \
+  --location asia-northeast2 --quiet
+
+# OTel 用 GCP サービスアカウントを削除
+GCP_PROJECT=$(gcloud config get-value project)
+gcloud iam service-accounts delete \
+  a2a-otel-sa@${GCP_PROJECT}.iam.gserviceaccount.com --quiet
+```
