@@ -709,9 +709,12 @@ Log Analytics ワークスペース
 | ファイル | 説明 |
 |---|---|
 | `k8s/otel-collector.yaml` | OTel Collector の ServiceAccount / Deployment / Service / ConfigMap（Key Vault なし版） |
-| `scripts/setup-otel.sh` | Application Insights 作成からデプロイまでを一括実行するスクリプト |
+| `scripts/setup-otel.sh` | Application Insights 作成からデプロイまでを一括実行するスクリプト（bash 版） |
+| `scripts/setup-otel.ps1` | Application Insights 作成からデプロイまでを一括実行するスクリプト（PowerShell 版） |
 
 ### 1. セットアップスクリプトの実行
+
+**bash の場合:**
 
 ```bash
 RESOURCE_GROUP=a2a-demo-rg \
@@ -719,6 +722,16 @@ ACR_NAME=<ACR名> \
 AKS_CLUSTER=a2a-demo-aks \
 APP_INSIGHTS_NAME=a2a-demo-appinsights \
   ./scripts/setup-otel.sh
+```
+
+**PowerShell の場合:**
+
+```powershell
+$env:RESOURCE_GROUP = "a2a-demo-rg"
+$env:ACR_NAME = "<ACR名>"
+$env:AKS_CLUSTER = "a2a-demo-aks"
+$env:APP_INSIGHTS_NAME = "a2a-demo-appinsights"
+& ./scripts/setup-otel.ps1
 ```
 
 スクリプトは以下の順序で処理します。
