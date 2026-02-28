@@ -686,6 +686,39 @@ kubectl rollout restart deployment/simple-agent deployment/echo-agent
 kubectl rollout status deployment/simple-agent deployment/echo-agent
 ```
 
+#### InvalidImageName エラーが発生する場合
+
+Pod が `InvalidImageName` エラーになっている場合、Deployment のイメージ名が不正な形式になっている可能性があります（例: `/a2a-dispatcher:latest` のように先頭に `/` が付いている）。
+
+```bash
+# InvalidImageName エラーの Pod を確認
+kubectl get pods -A | grep InvalidImageName
+
+# Running 以外の Pod を一括削除
+kubectl delete pod -n default --field-selector=status.phase!=Running
+```
+
+Running 以外の Pod を削除しても、Deployment が問題のある ReplicaSet から Pod を再作成し続ける場合は、Deployment を正常なリビジョンにロールバックします。
+
+```bash
+# Deployment のロールアウト履歴を確認
+kubectl rollout history deployment/a2a-dispatcher -n default
+
+# 特定のリビジョンの詳細を確認（イメージ名をチェック）
+kubectl rollout history deployment/a2a-dispatcher -n default --revision=1
+
+# 正常なイメージを持つリビジョンにロールバック（全 Deployment に対して実行）
+kubectl rollout undo deployment/a2a-dispatcher -n default --to-revision=1
+kubectl rollout undo deployment/agent-card-viewer -n default --to-revision=1
+kubectl rollout undo deployment/echo-agent -n default --to-revision=1
+kubectl rollout undo deployment/simple-agent -n default --to-revision=1
+
+# ロールバック後の状態を確認（すべて Running になるはず）
+kubectl get pods -n default
+```
+
+> **補足:** Deployment のロールアウト履歴から正常なリビジョンを見つけ、`--to-revision` で明示的に指定することで、確実に正常なイメージに戻すことができます。
+
 ---
 
 ## Step5: OpenTelemetry → Azure Application Insights でトレースを確認する
