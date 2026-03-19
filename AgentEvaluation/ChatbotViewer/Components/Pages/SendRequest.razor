@@ -12,7 +12,7 @@
     <div class="card-body">
         <div class="mb-3">
             <label class="form-label fw-semibold">メッセージ</label>
-            <textarea class="form-control" rows="4" @bind="_message" 
+            <textarea class="form-control" rows="4" @bind="_message"
                       placeholder="メッセージを入力してください。例: こんにちは！ / attack!! / sexual content"></textarea>
         </div>
 
@@ -56,7 +56,8 @@
             </div>
             <div>
                 <h6 class="text-muted">Raw JSON</h6>
-                <pre class="p-2 bg-light rounded" style="max-height: 300px; overflow-y: auto;"><code>@_rawResponse</code></pre>
+                <pre class="p-2 bg-light rounded"
+                     style="max-height: 300px; overflow-y: auto;"><code>@_rawResponse</code></pre>
             </div>
         </div>
     </div>
@@ -117,7 +118,7 @@
         try
         {
             var http = HttpClientFactory.CreateClient("chatbot");
-            
+
             // A2A プロトコルに従った JSON-RPC リクエストを構築
             var request = new
             {
@@ -146,7 +147,7 @@
             {
                 using var doc = JsonDocument.Parse(_rawResponse);
                 var root = doc.RootElement;
-                
+
                 if (root.TryGetProperty("result", out var result))
                 {
                     var messageId = result.GetProperty("messageId").GetString() ?? "N/A";
