@@ -1,0 +1,191 @@
+@page "/send-request"
+@rendermode InteractiveServer
+@using System.Net.Http.Json
+@using System.Text.Json
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>メッセージ送信</PageTitle>
+
+<h1 class="mb-4">💬 Chatbot にメッセージを送信</h1>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div class="mb-3">
+            <label class="form-label fw-semibold">メッセージ</label>
+            <textarea class="form-control" rows="4" @bind="_message" 
+                      placeholder="メッセージを入力してください。例: こんにちは！ / attack!! / sexual content"></textarea>
+        </div>
+
+        <button class="btn btn-primary" @onclick="SendMessage"
+                disabled="@(_sending || string.IsNullOrWhiteSpace(_message))">
+            @if (_sending)
+            {
+                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+            }
+            送信
+        </button>
+    </div>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger">
+        <strong>エラー:</strong> @_error
+    </div>
+}
+
+@if (_response is not null)
+{
+    <div class="card border-success mb-4">
+        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+            <strong>✅ レスポンス</strong>
+            <span class="badge bg-light text-dark">メッセージ ID: @_response.MessageId</span>
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <h6 class="text-muted">送信メッセージ</h6>
+                <div class="p-2 bg-light rounded">
+                    <code>@_lastSentMessage</code>
+                </div>
+            </div>
+            <div class="mb-3">
+                <h6 class="text-muted">Chatbot の返答</h6>
+                <div class="p-3 bg-success bg-opacity-10 rounded">
+                    <p class="mb-0" style="white-space: pre-wrap;">@_response.Text</p>
+                </div>
+            </div>
+            <div>
+                <h6 class="text-muted">Raw JSON</h6>
+                <pre class="p-2 bg-light rounded" style="max-height: 300px; overflow-y: auto;"><code>@_rawResponse</code></pre>
+            </div>
+        </div>
+    </div>
+}
+
+@if (_history.Any())
+{
+    <h5 class="mt-4 mb-3">📜 送信履歴</h5>
+    <div class="list-group">
+        @foreach (var item in _history)
+        {
+            <div class="list-group-item">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="badge bg-secondary">@item.Time.ToString("HH:mm:ss")</span>
+                    @if (item.HasError)
+                    {
+                        <span class="badge bg-danger">エラー</span>
+                    }
+                    else if (item.IsFlagged)
+                    {
+                        <span class="badge bg-warning text-dark">⚠ フラグ付き</span>
+                    }
+                    else
+                    {
+                        <span class="badge bg-success">✓ 正常</span>
+                    }
+                </div>
+                <div class="small mb-1">
+                    <span class="fw-semibold">送信:</span>
+                    <span class="text-muted">@item.Message</span>
+                </div>
+                <div class="small">
+                    <span class="fw-semibold">返答:</span>
+                    <span class="text-muted" style="white-space: pre-wrap;">@item.Reply</span>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private string _message = "";
+    private bool _sending = false;
+    private string? _error;
+    private ChatbotResponse? _response;
+    private string? _rawResponse;
+    private string? _lastSentMessage;
+    private List<HistoryItem> _history = new();
+
+    private async Task SendMessage()
+    {
+        _sending = true;
+        _error = null;
+        _response = null;
+        _rawResponse = null;
+        _lastSentMessage = _message;
+
+        try
+        {
+            var http = HttpClientFactory.CreateClient("chatbot");
+            
+            // A2A プロトコルに従った JSON-RPC リクエストを構築
+            var request = new
+            {
+                jsonrpc = "2.0",
+                id = Guid.NewGuid().ToString(),
+                method = "message/send",
+                @params = new
+                {
+                    message = new
+                    {
+                        kind = "message",
+                        role = "user",
+                        messageId = Guid.NewGuid().ToString(),
+                        parts = new[]
+                        {
+                            new { kind = "text", text = _message }
+                        }
+                    }
+                }
+            };
+
+            var httpResponse = await http.PostAsJsonAsync("/agent", request);
+            _rawResponse = await httpResponse.Content.ReadAsStringAsync();
+
+            if (httpResponse.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(_rawResponse);
+                var root = doc.RootElement;
+                
+                if (root.TryGetProperty("result", out var result))
+                {
+                    var messageId = result.GetProperty("messageId").GetString() ?? "N/A";
+                    var parts = result.GetProperty("parts");
+                    var text = parts[0].GetProperty("text").GetString() ?? "";
+
+                    _response = new ChatbotResponse(messageId, text);
+
+                    // 履歴に追加
+                    var isFlagged = text.Contains("問題のあるコンテンツ") || text.Contains("暴力的") || text.Contains("性的");
+                    _history.Insert(0, new HistoryItem(_lastSentMessage, text, DateTime.Now, false, isFlagged));
+                    if (_history.Count > 10) _history.RemoveAt(_history.Count - 1);
+
+                    _message = "";
+                }
+                else if (root.TryGetProperty("error", out var error))
+                {
+                    var errorMsg = error.GetProperty("message").GetString() ?? "Unknown error";
+                    _error = $"A2A エラー: {errorMsg}";
+                    _history.Insert(0, new HistoryItem(_lastSentMessage, errorMsg, DateTime.Now, true, false));
+                }
+            }
+            else
+            {
+                _error = $"HTTP エラー ({(int)httpResponse.StatusCode}): {_rawResponse}";
+                _history.Insert(0, new HistoryItem(_lastSentMessage, _error, DateTime.Now, true, false));
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"送信に失敗しました: {ex.Message}";
+            _history.Insert(0, new HistoryItem(_lastSentMessage, _error, DateTime.Now, true, false));
+        }
+        finally
+        {
+            _sending = false;
+        }
+    }
+
+    private record ChatbotResponse(string MessageId, string Text);
+    private record HistoryItem(string Message, string Reply, DateTime Time, bool HasError, bool IsFlagged);
+}

@@ -1,0 +1,134 @@
+@page "/"
+@rendermode InteractiveServer
+@using System.Net.Http.Json
+@inject IHttpClientFactory HttpClientFactory
+
+<PageTitle>Chatbot Agent Card</PageTitle>
+
+<h1 class="mb-4">🤖 Chatbot Agent Card</h1>
+
+<div class="mb-3">
+    <button class="btn btn-primary" @onclick="LoadAgentCard" disabled="@_loading">
+        @if (_loading)
+        {
+            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+        }
+        AgentCard を読み込む
+    </button>
+</div>
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+
+@if (_agentCard is not null)
+{
+    <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-4 mb-4">
+        <div class="col">
+            <div class="card h-100 shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    <strong>@_agentCard.Name</strong>
+                </div>
+                <div class="card-body">
+                    @if (!string.IsNullOrWhiteSpace(_agentCard.Description))
+                    {
+                        <p class="card-text text-muted small">@_agentCard.Description</p>
+                    }
+                    <p class="mb-1 small"><span class="fw-semibold">エンドポイント:</span></p>
+                    <code class="d-block p-1 bg-light rounded small mb-2">@_agentCard.Url</code>
+
+                    @if (_agentCard.Capabilities is not null)
+                    {
+                        <div class="d-flex flex-wrap gap-1">
+                            <span class="badge @(_agentCard.Capabilities.Streaming ? "bg-success" : "bg-secondary") small">
+                                ストリーミング: @(_agentCard.Capabilities.Streaming ? "有効" : "無効")
+                            </span>
+                            <span class="badge @(_agentCard.Capabilities.PushNotifications ? "bg-success" : "bg-secondary") small">
+                                プッシュ通知: @(_agentCard.Capabilities.PushNotifications ? "有効" : "無効")
+                            </span>
+                            <span class="badge @(_agentCard.Capabilities.StateTransitionHistory ? "bg-success" : "bg-secondary") small">
+                                状態遷移履歴: @(_agentCard.Capabilities.StateTransitionHistory ? "有効" : "無効")
+                            </span>
+                        </div>
+                    }
+                </div>
+                <div class="card-footer p-2">
+                    <button class="btn btn-success btn-sm w-100" @onclick="NavigateToSendRequest">
+                        ⚡ メッセージを送信する
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="mb-4">
+        <h5>Raw JSON</h5>
+        <pre class="p-3 bg-light rounded small" style="max-height: 300px; overflow: auto; word-break: break-all;"><code>@_rawJson</code></pre>
+    </div>
+}
+
+@code {
+    [Inject] NavigationManager NavigationManager { get; set; } = default!;
+    
+    private AgentCard? _agentCard;
+    private string? _rawJson;
+    private bool _loading = false;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAgentCard();
+    }
+
+    private async Task LoadAgentCard()
+    {
+        _loading = true;
+        _error = null;
+        _agentCard = null;
+        _rawJson = null;
+
+        try
+        {
+            var http = HttpClientFactory.CreateClient("chatbot");
+            var response = await http.GetAsync("/.well-known/agent-card.json");
+            
+            if (response.IsSuccessStatusCode)
+            {
+                _rawJson = await response.Content.ReadAsStringAsync();
+                _agentCard = await response.Content.ReadFromJsonAsync<AgentCard>();
+            }
+            else
+            {
+                _error = $"AgentCard の取得に失敗しました (HTTP {(int)response.StatusCode})";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Chatbot への接続に失敗しました: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void NavigateToSendRequest()
+    {
+        NavigationManager.NavigateTo("/send-request");
+    }
+
+    private record AgentCard(
+        string Name,
+        string? Description,
+        string Url,
+        AgentCapabilities? Capabilities
+    );
+
+    private record AgentCapabilities(
+        bool Streaming,
+        bool PushNotifications,
+        bool StateTransitionHistory,
+        string[]? Extensions
+    );
+}
