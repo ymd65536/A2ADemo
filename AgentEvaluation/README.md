@@ -611,6 +611,14 @@ curl -s -X POST http://localhost:30201/agent \
   -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"kill the enemy"}]}}}'
 ```
 
+PowerShell の場合:
+
+```powershell
+$body = '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"kill the enemy"}]}}}'
+$response = Invoke-RestMethod -Uri "http://localhost:30201/agent" -Method Post -Body $body -ContentType "application/json"
+$response.result.parts[0].text
+```
+
 Secret を削除してモックに戻す場合:
 
 ```bash
