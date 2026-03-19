@@ -82,7 +82,8 @@ public class EvaluationAgent(IConfiguration config, ILogger logger)
     private static readonly string[] SexualTriggerKeywords =
     [
         "sex", "nude", "explicit", "sexual", "porn", "naked", "erotic",
-        "性的", "裸", "ポルノ", "エロ", "わいせつ"
+        "性的", "裸", "ポルノ", "エロ", "わいせつ",
+        "近親相姦", "アダルト", "18禁", "r-18", "r18"
     ];
 
     private enum ContentCategory { None, Violence, Sexual }

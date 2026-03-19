@@ -106,9 +106,7 @@ public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger
         var userText = messageParams.Message.Parts.OfType<TextPart>().FirstOrDefault()?.Text ?? "";
         activity?.SetTag("user.message.length", userText.Length);
 
-        var needsEval = NeedsEvaluation(userText);
-        logger.LogInformation("[Chatbot] message={Message} needsEval={NeedsEval} chatClientEnabled={ChatEnabled}",
-            userText[..Math.Min(80, userText.Length)], needsEval, chatClient is not null);
+        logger.LogInformation("[Chatbot] message={Message}", userText[..Math.Min(80, userText.Length)]);
 
         // ─── LLM または モック で応答を生成 ───
         string chatbotAnswer;
@@ -136,12 +134,17 @@ public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger
         {
             // モック応答 (Azure OpenAI 未設定時の開発用フォールバック)
             logger.LogWarning("[Chatbot] AzureOpenAI が未設定です。モック応答を使用します。");
-            chatbotAnswer = needsEval
-                ? "申し訳ありませんが、そのご質問にはお答えできません。"
-                : $"{userText} について承りました。何かお手伝いできることはありますか？";
+            chatbotAnswer = $"{userText} について承りました。何かお手伝いできることはありますか？";
         }
 
         var qaPair = $"[User]\n{userText}\n[Chatbot]\n{chatbotAnswer}";
+
+        // ユーザー入力または AI 返答のいずれかにセンシティブなキーワードがあれば評価対象
+        var userEval   = NeedsEvaluation(userText);
+        var answerEval = NeedsEvaluation(chatbotAnswer);
+        var needsEval  = userEval || answerEval;
+        logger.LogInformation("[Chatbot] needsEval={NeedsEval} (user={UserEval} / answer={AnswerEval})",
+            needsEval, userEval, answerEval);
 
         if (!needsEval)
         {
