@@ -1,0 +1,315 @@
+# ============================================================
+# マルチエージェントエバリュエーションシステム - ローカル/Minikube 用
+# ============================================================
+#
+# System Architecture (README 準拠):
+#   Client → Chatbot (A2A) → ViolenceEvaluator (A2A)
+#                          → SexualEvaluator   (A2A)
+#
+# エージェント一覧:
+#   1. violence-evaluator  : 暴力的コンテンツを評価 (Azure AI Content Safety)
+#   2. sexual-evaluator    : 性的コンテンツを評価   (Azure AI Content Safety)
+#   3. chatbot             : ユーザー対話 + 評価エージェント呼び出し
+#
+# A2A 接続 (Chatbot → Evaluators):
+#   ViolenceEvaluator: http://violence-evaluator-svc/agent
+#   SexualEvaluator  : http://sexual-evaluator-svc/agent
+#
+# ポートマッピング (Minikube NodePort):
+#   Chatbot        : http://localhost:30200/agent
+#   Aspire Dashboard: http://localhost:30088
+#
+# 使い方:
+#   ./scripts/deploy-eval-local.sh
+#
+# Azure AI Content Safety Secret 作成:
+#   kubectl create secret generic azure-content-safety-secret \
+#     --from-literal=endpoint="https://<name>.cognitiveservices.azure.com" \
+#     --from-literal=api-key="<key>" \
+#     -n agent-evaluation
+# ============================================================
+
+# 1. Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-evaluation
+---
+# 2. Azure AI Content Safety の認証情報 Secret (プレースホルダー)
+#    実際の値は上記コマンドで作成すること
+apiVersion: v1
+kind: Secret
+metadata:
+  name: azure-content-safety-secret
+  namespace: agent-evaluation
+type: Opaque
+data:
+  endpoint: ""  # base64 エンコード済みエンドポイントを設定
+  api-key: ""   # base64 エンコード済み API キーを設定
+---
+# ============================================================
+# エージェント 1: ViolenceEvaluator
+# 役割: テキストの暴力的コンテンツを Azure AI Content Safety で評価
+# A2A エンドポイント: GET /.well-known/agent.json / POST /agent
+# Capability: violence-evaluation
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: violence-evaluator
+  namespace: agent-evaluation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: violence-evaluator
+  template:
+    metadata:
+      labels:
+        app: violence-evaluator
+    spec:
+      containers:
+      - name: violence-evaluator
+        image: violence-evaluator:latest
+        imagePullPolicy: Never
+        env:
+        - name: AzureContentSafety__Endpoint
+          valueFrom:
+            secretKeyRef:
+              name: azure-content-safety-secret
+              key: endpoint
+              optional: true   # Secret 未設定時は開発用モックを使用
+        - name: AzureContentSafety__ApiKey
+          valueFrom:
+            secretKeyRef:
+              name: azure-content-safety-secret
+              key: api-key
+              optional: true
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+# ViolenceEvaluator Service (ClusterIP: Chatbot からのみ呼び出し)
+apiVersion: v1
+kind: Service
+metadata:
+  name: violence-evaluator-svc
+  namespace: agent-evaluation
+spec:
+  selector:
+    app: violence-evaluator
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# ============================================================
+# エージェント 2: SexualEvaluator
+# 役割: テキストの性的コンテンツを Azure AI Content Safety で評価
+# A2A エンドポイント: GET /.well-known/agent.json / POST /agent
+# Capability: sexual-evaluation
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sexual-evaluator
+  namespace: agent-evaluation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sexual-evaluator
+  template:
+    metadata:
+      labels:
+        app: sexual-evaluator
+    spec:
+      containers:
+      - name: sexual-evaluator
+        image: sexual-evaluator:latest
+        imagePullPolicy: Never
+        env:
+        - name: AzureContentSafety__Endpoint
+          valueFrom:
+            secretKeyRef:
+              name: azure-content-safety-secret
+              key: endpoint
+              optional: true
+        - name: AzureContentSafety__ApiKey
+          valueFrom:
+            secretKeyRef:
+              name: azure-content-safety-secret
+              key: api-key
+              optional: true
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+# SexualEvaluator Service (ClusterIP: Chatbot からのみ呼び出し)
+apiVersion: v1
+kind: Service
+metadata:
+  name: sexual-evaluator-svc
+  namespace: agent-evaluation
+spec:
+  selector:
+    app: sexual-evaluator
+  ports:
+  - port: 80
+    targetPort: 8080
+---
+# ============================================================
+# エージェント 3: Chatbot
+# 役割: ユーザー対話 + 内容に応じて評価エージェントを A2A 呼び出し
+# A2A エンドポイント: GET /.well-known/agent.json / POST /agent
+# Capability: chat
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatbot
+  namespace: agent-evaluation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chatbot
+  template:
+    metadata:
+      labels:
+        app: chatbot
+    spec:
+      containers:
+      - name: chatbot
+        image: chatbot:latest
+        imagePullPolicy: Never
+        env:
+        # A2A 接続先: ViolenceEvaluator / SexualEvaluator の K8s Service DNS
+        - name: Evaluators__ViolenceEvaluatorUrl
+          value: "http://violence-evaluator-svc"
+        - name: Evaluators__SexualEvaluatorUrl
+          value: "http://sexual-evaluator-svc"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+# Chatbot Service (NodePort: クライアントからのアクセス用)
+apiVersion: v1
+kind: Service
+metadata:
+  name: chatbot-svc
+  namespace: agent-evaluation
+spec:
+  selector:
+    app: chatbot
+  type: NodePort
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30200  # http://localhost:30200/agent でアクセス可能
+---
+# ============================================================
+# Aspire Dashboard - OTel トレース/メトリクスの可視化
+# UI: http://localhost:30088
+# OTLP(HTTP): aspire-dashboard-svc:18890 (Namespace 内 DNS)
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aspire-dashboard
+  namespace: agent-evaluation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aspire-dashboard
+  template:
+    metadata:
+      labels:
+        app: aspire-dashboard
+    spec:
+      containers:
+      - name: dashboard
+        image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
+        imagePullPolicy: Always
+        env:
+        - name: ASPIRE_ALLOW_UNSECURED_TRANSPORT
+          value: "true"
+        - name: DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS
+          value: "true"
+        ports:
+        - containerPort: 18888   # Dashboard UI
+        - containerPort: 18889   # OTLP gRPC
+        - containerPort: 18890   # OTLP HTTP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aspire-dashboard-svc
+  namespace: agent-evaluation
+spec:
+  type: NodePort
+  selector:
+    app: aspire-dashboard
+  ports:
+  - name: http
+    port: 18888
+    targetPort: 18888
+    nodePort: 30088  # http://localhost:30088 でアクセス
+  - name: otlp-grpc
+    port: 18889
+    targetPort: 18889
+    appProtocol: grpc
+  - name: otlp-http
+    port: 18890
+    targetPort: 18890
