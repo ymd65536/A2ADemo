@@ -18,16 +18,17 @@
 2. **Sexual Evaluator**: 性的なコンテンツを評価するエージェント。
 3. **chatbot**: チャットボットエージェント。ユーザーとの対話を通じて、様々なタスクやシナリオに対して評価を行います。応答内容はいったん各Evaluatorを呼び出してから返す形であり、Evaluatorを呼び出すかどうかはユーザーからの質問内容によって判断されます。
 
-3つのエージェントとは別にA2AのクライアントもKubernetes上で動作し、これらのエージェントを呼び出すことができるフロントエンドとして機能します。
+3つのエージェントとは別に、Blazor Server で実装された **ChatbotViewer** が Kubernetes 上で動作し、Chatbot の AgentCard 確認とメッセージ送信を行える Web UI として機能します。
 
 ### A2A 接続フロー
 
 ```
-Client
-  └─ POST /agent (A2A message/send)
-       └─ Chatbot (:30200)
-            ├─ A2A → ViolenceEvaluator (violence-evaluator-svc:80)
-            └─ A2A → SexualEvaluator   (sexual-evaluator-svc:80)
+Browser
+  └─ HTTP → ChatbotViewer (:30203)  ← Blazor Server Web UI
+               └─ HTTP POST /agent (A2A message/send)
+                    └─ Chatbot (:30200)
+                         ├─ A2A → ViolenceEvaluator (violence-evaluator-svc:80)
+                         └─ A2A → SexualEvaluator   (sexual-evaluator-svc:80)
 ```
 
 Chatbot はユーザーメッセージを受信し、センシティブなキーワードを含む場合に限り ViolenceEvaluator と SexualEvaluator を**並列**で A2A 呼び出しします。評価結果に問題がなければ通常の応答を、フラグが立った場合は安全上の警告を返します。
@@ -52,13 +53,24 @@ AgentEvaluation/
 │   ├── appsettings.Development.json
 │   ├── dockerfile
 │   └── Properties/launchSettings.json
-└── Chatbot/                     # エージェント 3 (オーケストレーター)
-    ├── Chatbot.csproj
+├── Chatbot/                     # エージェント 3 (オーケストレーター)
+│   ├── Chatbot.csproj
+│   ├── Program.cs
+│   ├── appsettings.json
+│   ├── appsettings.Development.json
+│   ├── dockerfile
+│   └── Properties/launchSettings.json
+└── ChatbotViewer/               # Web UI (Blazor Server)
+    ├── ChatbotViewer.csproj
     ├── Program.cs
     ├── appsettings.json
     ├── appsettings.Development.json
     ├── dockerfile
-    └── Properties/launchSettings.json
+    ├── Components/
+    │   ├── App.razor
+    │   ├── Layout/              # MainLayout, NavMenu
+    │   └── Pages/               # Home (AgentCard表示), SendRequest (メッセージ送信)
+    └── wwwroot/
 ```
 
 ## エージェント詳細
@@ -164,6 +176,24 @@ POST /agent (ユーザーメッセージ受信)
 
 センシティブと判断されるキーワード例: `kill`, `attack`, `bomb`, `sex`, `殺`, `暴力`, `性的` など
 
+---
+
+### ChatbotViewer
+
+| 項目 | 値 |
+|---|---|
+| URL | `http://localhost:30203` |
+| ローカルポート (開発時) | `5100` |
+| K8s NodePort | `30203` |
+| K8s Service | `chatbot-viewer-svc:80` |
+| 接続先 (K8s内) | `http://chatbot-svc` |
+
+Chatbot の AgentCard 情報を表示し、メッセージを A2A 形式で送信できる Blazor Server Web UI です。
+
+**機能**
+- **AgentCard ページ** (`/`): Chatbot の名前・説明・エンドポイント・機能一覧をカード表示
+- **メッセージ送信ページ** (`/send-request`): テキストを入力して Chatbot に A2A リクエストを送信し、レスポンスを表示
+
 **チャットリクエスト例**
 
 ```bash
@@ -199,6 +229,7 @@ docker pull mcr.microsoft.com/dotnet/aspnet:10.0
 docker build -t violence-evaluator:latest ./AgentEvaluation/ViolenceEvaluator
 docker build -t sexual-evaluator:latest   ./AgentEvaluation/SexualEvaluator
 docker build -t chatbot:latest            ./AgentEvaluation/Chatbot
+docker build -t chatbot-viewer:latest     ./AgentEvaluation/ChatbotViewer
 ```
 
 > **Note**: Rancher Desktop は `docker build` したイメージをそのまま K8s から参照できます。`eval $(minikube docker-env)` は不要です。
@@ -224,6 +255,8 @@ curl http://localhost:30200/.well-known/agent-card.json
 # AgentCard 取得 (PowerShell)
 Invoke-RestMethod -Uri "http://localhost:30200/.well-known/agent-card.json"
 ```
+
+> **Web UI でも確認できます**: ブラウザで `http://localhost:30203` を開くと ChatbotViewer が起動しており、AgentCard の確認とメッセージ送信を GUI で行えます。
 
 #### 3-1. 通常メッセージ (評価スキップ)
 
@@ -416,6 +449,7 @@ Aspire Dashboard を使って全エージェントの OpenTelemetry トレース
 | `http://localhost:30200` | Chatbot (A2A エンドポイント) |
 | `http://localhost:30201` | ViolenceEvaluator (A2A エンドポイント) |
 | `http://localhost:30202` | SexualEvaluator (A2A エンドポイント) |
+| `http://localhost:30203` | **ChatbotViewer** (Blazor Server Web UI) |
 | `http://localhost:30088` | Aspire Dashboard (OTel トレース/メトリクス UI) |
 | `http://localhost:30200/metrics` | Chatbot Prometheus メトリクス |
 
