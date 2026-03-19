@@ -71,12 +71,21 @@ public class EvaluationAgent(IConfiguration config, ILogger logger)
 {
     private static readonly ActivitySource Source = new("EvaluationAgent.Custom");
 
-    // 性的コンテンツ評価が必要かどうかを判断するキーワード群
+    // 暴力的コンテンツ判定キーワード
+    private static readonly string[] ViolenceTriggerKeywords =
+    [
+        "kill", "attack", "violence", "bomb", "murder", "shoot", "stab", "weapon", "fight",
+        "殺", "暴力", "攻撃", "爆弾", "射撃", "武器", "戦闘"
+    ];
+
+    // 性的コンテンツ判定キーワード
     private static readonly string[] SexualTriggerKeywords =
     [
-        "sex", "nude", "explicit", "sexual",
-        "性的", "裸", "ポルノ"
+        "sex", "nude", "explicit", "sexual", "porn", "naked", "erotic",
+        "性的", "裸", "ポルノ", "エロ", "わいせつ"
     ];
+
+    private enum ContentCategory { None, Violence, Sexual }
 
     public void Attach(ITaskManager taskManager)
     {
@@ -109,32 +118,33 @@ public class EvaluationAgent(IConfiguration config, ILogger logger)
         var sexualUrl = config["Evaluators:SexualEvaluatorUrl"]
             ?? "http://sexual-evaluator-svc";
 
-        // モック: 常に ViolenceEvaluator を呼ぶ
-        // 性的キーワードが含まれる場合は SexualEvaluator も呼ぶ
-        var callSexual = NeedsSexualEval(evalText);
+        // コンテンツを分類して適切な Evaluator の AgentCard を読み込み、呼び出す
+        // 暴力的 → ViolenceEvaluator、性的 → SexualEvaluator
+        // 区別がつかない場合はキーワードスコアが高い方を選択。同点は Violence を優先
+        var category = ClassifyContent(evalText);
+
+        logger.LogInformation("[EvaluationAgent] コンテンツ分類: {Category}", category);
+        activity?.SetTag("content.category", category.ToString());
 
         EvalResult? violenceResult = null;
         EvalResult? sexualResult = null;
 
-        if (callSexual)
+        switch (category)
         {
-            // 両方並列で呼び出し
-            await Task.WhenAll(
-                CallEvaluatorAsync(violenceUrl, evalPayload, ct)
-                    .ContinueWith(t => violenceResult = t.Result, ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Current),
-                CallEvaluatorAsync(sexualUrl, evalPayload, ct)
-                    .ContinueWith(t => sexualResult = t.Result, ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Current)
-            );
-        }
-        else
-        {
-            // ViolenceEvaluator のみ呼び出し（モック動作）
-            violenceResult = await CallEvaluatorAsync(violenceUrl, evalPayload, ct);
+            case ContentCategory.Violence:
+                violenceResult = await CallEvaluatorAsync(violenceUrl, evalPayload, ct);
+                break;
+            case ContentCategory.Sexual:
+                sexualResult = await CallEvaluatorAsync(sexualUrl, evalPayload, ct);
+                break;
+            case ContentCategory.None:
+            default:
+                logger.LogInformation("[EvaluationAgent] センシティブなコンテンツなし。評価をスキップします。");
+                break;
         }
 
         activity?.SetTag("violence.flagged", violenceResult?.Flagged);
         activity?.SetTag("sexual.flagged", sexualResult?.Flagged);
-        activity?.SetTag("sexual.called", callSexual);
 
         // ─── レスポンス構築 ───
         var sb = new System.Text.StringBuilder();
@@ -144,17 +154,23 @@ public class EvaluationAgent(IConfiguration config, ILogger logger)
         sb.AppendLine(chatbotAnswer);
         sb.AppendLine("[Evaluation]");
 
-        if (violenceResult is not null)
+        if (category == ContentCategory.None)
         {
-            var flag = violenceResult.Flagged ? "⚠️ flagged" : "✓ safe";
-            sb.AppendLine($"Violence: score={violenceResult.Score} ({violenceResult.Severity}) {flag}");
+            sb.AppendLine("センシティブなコンテンツは検出されませんでした。");
         }
-        else
+        else if (category == ContentCategory.Violence)
         {
-            sb.AppendLine("Violence: (評価失敗)");
+            if (violenceResult is not null)
+            {
+                var flag = violenceResult.Flagged ? "⚠️ flagged" : "✓ safe";
+                sb.AppendLine($"Violence: score={violenceResult.Score} ({violenceResult.Severity}) {flag}");
+            }
+            else
+            {
+                sb.AppendLine("Violence: (評価失敗)");
+            }
         }
-
-        if (callSexual)
+        else if (category == ContentCategory.Sexual)
         {
             if (sexualResult is not null)
             {
@@ -220,9 +236,21 @@ public class EvaluationAgent(IConfiguration config, ILogger logger)
         return (userQuestion, chatbotAnswer);
     }
 
-    /// <summary>性的コンテンツ評価が必要かどうかをキーワードで判断する</summary>
-    private static bool NeedsSexualEval(string text) =>
-        SexualTriggerKeywords.Any(k => text.Contains(k, StringComparison.OrdinalIgnoreCase));
+    /// <summary>コンテンツを分類して適切な評価カテゴリを返す</summary>
+    /// <remarks>
+    /// 暴力・性的両方のキーワードが一致する場合はスコアが高い方を返す。
+    /// 同点の場合は Violence を優先。いずれも一致しない場合は None を返す。
+    /// </remarks>
+    private static ContentCategory ClassifyContent(string text)
+    {
+        var violenceScore = ViolenceTriggerKeywords.Count(k => text.Contains(k, StringComparison.OrdinalIgnoreCase));
+        var sexualScore = SexualTriggerKeywords.Count(k => text.Contains(k, StringComparison.OrdinalIgnoreCase));
+
+        if (violenceScore == 0 && sexualScore == 0) return ContentCategory.None;
+
+        // スコアが高い方に分類。同点の場合は Violence を優先
+        return sexualScore > violenceScore ? ContentCategory.Sexual : ContentCategory.Violence;
+    }
 
     /// <summary>評価エージェントを A2A で呼び出す</summary>
     private async Task<EvalResult?> CallEvaluatorAsync(string baseUrl, string evalPayload, CancellationToken ct)
