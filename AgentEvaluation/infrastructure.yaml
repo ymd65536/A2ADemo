@@ -38,36 +38,23 @@ kind: Namespace
 metadata:
   name: agent-evaluation
 ---
-# 2. Azure AI Content Safety の認証情報 Secret (プレースホルダー)
-#    実際の値は上記コマンドで作成すること
-apiVersion: v1
-kind: Secret
-metadata:
-  name: azure-content-safety-secret
-  namespace: agent-evaluation
-type: Opaque
-data:
-  endpoint: ""  # base64 エンコード済みエンドポイントを設定
-  api-key: ""   # base64 エンコード済み API キーを設定
+# 2. Azure AI Content Safety Secret
+#    以下のコマンドで作成すること (kubectl apply では管理しない):
+#    kubectl create secret generic azure-content-safety-secret \
+#      --from-literal=endpoint="https://<name>.cognitiveservices.azure.com" \
+#      --from-literal=api-key="<key>" \
+#      -n agent-evaluation \
+#      --dry-run=client -o yaml | kubectl apply -f -
 ---
-# 3. Azure OpenAI の認証情報 Secret (プレースホルダー)
-#    実際の値は以下のコマンドで作成すること:
+# 3. Azure OpenAI Secret
+#    以下のコマンドで作成すること (kubectl apply では管理しない):
 #    kubectl create secret generic azure-openai-secret \
-#      --from-literal=endpoint="https://<name>.openai.azure.com" \
+#      --from-literal=endpoint="https://<name>.cognitiveservices.azure.com" \
 #      --from-literal=deployment-name="<deployment>" \
 #      --from-literal=api-key="<key>" \
-#      -n agent-evaluation
+#      -n agent-evaluation \
+#      --dry-run=client -o yaml | kubectl apply -f -
 #    ※ AKS Workload Identity を使用する場合は api-key を省略可能
-apiVersion: v1
-kind: Secret
-metadata:
-  name: azure-openai-secret
-  namespace: agent-evaluation
-type: Opaque
-data:
-  endpoint: ""         # base64 エンコード済みエンドポイントを設定
-  deployment-name: ""  # base64 エンコード済みデプロイ名を設定
-  api-key: ""          # base64 エンコード済み API キーを設定 (省略可)
 ---
 # ============================================================
 # エージェント 1: ViolenceEvaluator

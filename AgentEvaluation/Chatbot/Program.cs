@@ -2,10 +2,8 @@ using A2A;
 using A2A.AspNetCore;
 using Azure;
 using Azure.AI.OpenAI;
-using Azure.Core;
 using Azure.Identity;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
+using OpenAI.Chat;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -27,7 +25,7 @@ builder.Services.AddOpenTelemetry()
         .AddRuntimeInstrumentation()
         .AddPrometheusExporter());
 
-// ─── Azure OpenAI AIAgent (Microsoft Agent Framework) ───
+// ─── Azure OpenAI IChatClient (Microsoft.Extensions.AI) ───
 // AzureOpenAI:Endpoint / AzureOpenAI:DeploymentName が設定されている場合のみ有効化
 // 認証: AzureOpenAI:ApiKey が設定されていれば AzureKeyCredential を使用
 //       未設定の場合は DefaultAzureCredential にフォールバック (AKS Workload Identity 用)
@@ -41,14 +39,9 @@ if (!string.IsNullOrEmpty(openAiEndpoint) && !string.IsNullOrEmpty(openAiDeploym
         ? new AzureOpenAIClient(new Uri(openAiEndpoint), new AzureKeyCredential(openAiApiKey))
         : new AzureOpenAIClient(new Uri(openAiEndpoint), new DefaultAzureCredential());
 
-    var agentInstance = openAiClient
-        .GetChatClient(openAiDeployment)
-        .AsIChatClient()
-        .AsAIAgent(
-            instructions: "あなたは親切なアシスタントです。ユーザーの質問に対して日本語で丁寧に答えてください。",
-            name: "Chatbot");
+    ChatClient chatClientInstance = openAiClient.GetChatClient(openAiDeployment);
 
-    builder.Services.AddSingleton(agentInstance);
+    builder.Services.AddSingleton<ChatClient>(chatClientInstance);
 }
 
 var app = builder.Build();
@@ -64,8 +57,12 @@ app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
 
 var taskManager = new TaskManager();
 var config = app.Configuration;
-var aiAgent = app.Services.GetService<AIAgent>();
-var chatbot = new ChatbotAgent(aiAgent, config, app.Logger);
+var chatClient = app.Services.GetService<ChatClient>();
+app.Logger.LogInformation("[Startup] AzureOpenAI:Endpoint='{E}' AzureOpenAI:DeploymentName='{D}' ChatClient={C}",
+    config["AzureOpenAI:Endpoint"] ?? "(null)",
+    config["AzureOpenAI:DeploymentName"] ?? "(null)",
+    chatClient?.GetType().Name ?? "null (not registered)");
+var chatbot = new ChatbotAgent(chatClient, config, app.Logger);
 chatbot.Attach(taskManager);
 
 app.MapA2A(taskManager, "/agent");
@@ -76,13 +73,14 @@ app.Run();
 // Chatbot エージェント
 // ─────────────────────────────────────────────
 // 役割:
-//   ユーザーからのメッセージを Azure OpenAI (Microsoft Agent Framework) で処理し、
+//   ユーザーからのメッセージを Azure OpenAI (Microsoft.Extensions.AI) で処理し、
 //   センシティブなキーワードを含む場合は EvaluationAgent を A2A で呼び出して
 //   Q&A ペアの安全性を評価する。
 //
+// リクエストごとに [system, user] の2メッセージのみ送信 (会話履歴は保持しない)
 // Azure OpenAI 未設定時はモック応答にフォールバック (開発用)
 // ─────────────────────────────────────────────
-public class ChatbotAgent(AIAgent? aiAgent, IConfiguration config, ILogger logger)
+public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger logger)
 {
     private static readonly ActivitySource Source = new("Chatbot.Custom");
 
@@ -92,7 +90,7 @@ public class ChatbotAgent(AIAgent? aiAgent, IConfiguration config, ILogger logge
         "kill", "attack", "hurt", "punch", "stab", "bomb", "shoot", "weapon",
         "殺", "攻撃", "傷", "爆発", "銃", "ナイフ", "暴力",
         "sex", "nude", "explicit", "sexual",
-        "性的", "裸", "ポルノ"
+        "性的", "裸", "ポルノ", "性的描写", "近親相姦", "アダルト"
     ];
 
     public void Attach(ITaskManager taskManager)
@@ -109,23 +107,28 @@ public class ChatbotAgent(AIAgent? aiAgent, IConfiguration config, ILogger logge
         activity?.SetTag("user.message.length", userText.Length);
 
         var needsEval = NeedsEvaluation(userText);
-        logger.LogInformation("[Chatbot] message={Message} needsEval={NeedsEval} aiAgentEnabled={AiEnabled}",
-            userText[..Math.Min(80, userText.Length)], needsEval, aiAgent is not null);
+        logger.LogInformation("[Chatbot] message={Message} needsEval={NeedsEval} chatClientEnabled={ChatEnabled}",
+            userText[..Math.Min(80, userText.Length)], needsEval, chatClient is not null);
 
         // ─── LLM または モック で応答を生成 ───
         string chatbotAnswer;
-        if (aiAgent is not null)
+        if (chatClient is not null)
         {
             try
             {
-                // Microsoft Agent Framework 経由で Azure OpenAI を呼び出す
-                var agentResponse = await aiAgent.RunAsync(new ChatMessage(ChatRole.User, userText));
-                chatbotAnswer = agentResponse?.ToString() ?? "";
-                logger.LogInformation("[Chatbot] AIAgent 応答完了 length={Length}", chatbotAnswer.Length);
+                // リクエストごとに [system, user] の2メッセージのみ送信 (履歴なし)
+                List<OpenAI.Chat.ChatMessage> messages =
+                [
+                    new SystemChatMessage("あなたは親切なアシスタントです。ユーザーの質問に対して日本語で丁寧に答えてください。"),
+                    new UserChatMessage(userText)
+                ];
+                var completion = await chatClient.CompleteChatAsync(messages);
+                chatbotAnswer = completion.Value.Content[0].Text;
+                logger.LogInformation("[Chatbot] ChatClient 応答完了 length={Length}", chatbotAnswer.Length);
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "[Chatbot] AIAgent 呼び出し失敗。モック応答を使用します。");
+                logger.LogError(ex, "[Chatbot] ChatClient 呼び出し失敗。モック応答を使用します。");
                 chatbotAnswer = $"{userText[..Math.Min(40, userText.Length)]} について承りました。";
             }
         }

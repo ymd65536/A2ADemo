@@ -722,14 +722,23 @@ kubectl create secret generic azure-openai-secret \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
+> エンドポイントは Azure OpenAI リソースの作成方法によって形式が異なります:
+> - Azure OpenAI リソース単独作成: `https://<name>.openai.azure.com`
+> - Azure AI Foundry / Azure AI Services: `https://<name>.cognitiveservices.azure.com`
+>
+> `AzureOpenAIClient` はどちらの形式でも動作します。
+
 > AKS Workload Identity を使う場合は `api-key` を省略できます。その場合 `DefaultAzureCredential` が使用されます。
 
 **PowerShell の場合:**
 
 ```powershell
-$endpoint       = "https://<name>.openai.azure.com"
-$deploymentName = "gpt-4o"
-$apiKey         = "<key>"
+# ベース URL のみ指定すること (パス・クエリパラメータは不要)
+# Azure OpenAI 単独: https://<name>.openai.azure.com
+# Azure AI Foundry:  https://<name>.cognitiveservices.azure.com
+$endpoint="https://<name>.cognitiveservices.azure.com"
+$deploymentName="gpt-4o"
+$apiKey="<key>"
 
 kubectl create secret generic azure-openai-secret `
   --from-literal=endpoint="$endpoint" `
@@ -739,6 +748,8 @@ kubectl create secret generic azure-openai-secret `
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
+> **PowerShell での行継続は `` ` `` (バッククォート) を使います。`\` ではエラーになります。**
+
 ### 4. ローカル開発時: dotnet user-secrets で設定
 
 Kubernetes Secret を使わずローカルで動作確認したい場合は `dotnet user-secrets` を使います。
@@ -746,7 +757,7 @@ Kubernetes Secret を使わずローカルで動作確認したい場合は `dot
 ```bash
 cd AgentEvaluation/Chatbot
 dotnet user-secrets init   # 初回のみ (UserSecretsId が .csproj に追加される)
-dotnet user-secrets set "AzureOpenAI:Endpoint"       "https://<name>.openai.azure.com"
+dotnet user-secrets set "AzureOpenAI:Endpoint"       "https://<name>.openai.azure.com"  # または https://<name>.cognitiveservices.azure.com
 dotnet user-secrets set "AzureOpenAI:DeploymentName" "gpt-4o"
 dotnet user-secrets set "AzureOpenAI:ApiKey"         "<key>"   # DefaultAzureCredential を使う場合は不要
 ```
@@ -756,7 +767,7 @@ dotnet user-secrets set "AzureOpenAI:ApiKey"         "<key>"   # DefaultAzureCre
 ```powershell
 Set-Location AgentEvaluation/Chatbot
 dotnet user-secrets init
-dotnet user-secrets set "AzureOpenAI:Endpoint"       "https://<name>.openai.azure.com"
+dotnet user-secrets set "AzureOpenAI:Endpoint"       "https://<name>.openai.azure.com"  # または https://<name>.cognitiveservices.azure.com
 dotnet user-secrets set "AzureOpenAI:DeploymentName" "gpt-4o"
 dotnet user-secrets set "AzureOpenAI:ApiKey"         "<key>"
 ```
@@ -791,6 +802,32 @@ curl -s -X POST http://localhost:30200/agent \
   -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"東京の天気を教えてください"}]}}}'
 ```
 
+**PowerShell の場合:**
+
+```powershell
+# Chatbot のログ確認
+kubectl logs -n agent-evaluation deployment/chatbot --tail=20
+
+# 通常メッセージ送信テスト
+$body = @'
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "kind": "message",
+      "role": "user",
+      "messageId": "msg-001",
+      "parts": [{"kind": "text", "text": "東京の天気を教えてください"}]
+    }
+  }
+}
+'@
+$response = Invoke-RestMethod -Uri "http://localhost:30200/agent" -Method Post -Body $body -ContentType "application/json"
+$response.result.parts[0].text
+```
+
 Secret を削除してモックに戻す場合:
 
 ```bash
@@ -818,4 +855,6 @@ Aspire Dashboard を使って全エージェントの OpenTelemetry トレース
 - A2A SDK v0.3.3-preview のエージェントカードパスは `/.well-known/agent-card.json` です（`/.well-known/agent.json` ではありません）。
 - `A2ACardResolver` にはサービスのルート URL（例: `http://violence-evaluator-svc`）を渡す必要があります。
 - A2A SDK v0.3.3-preview のリクエストでは `message` オブジェクト自体にも `"kind": "message"` が必須です（`Part` の `"kind": "text"` と合わせて両方必要）。
+- **PowerShell での行継続は `\` ではなく `` ` `` を使用してください。** `\` は PowerShell では行継続文字として機能せず `Missing expression after unary operator '--'` エラーが発生します。
+- **`AzureOpenAIClient` に渡すエンドポイントはベース URL のみ指定してください。** パス (`/openai/responses`) やクエリパラメータ (`?api-version=...`) を含めると接続に失敗します。正しい形式: `https://<name>.cognitiveservices.azure.com`
 
