@@ -218,18 +218,43 @@ kubectl apply -f AgentEvaluation/infrastructure.yaml
 # Pod が Running になるまで確認
 kubectl get pods -n agent-evaluation -w
 
-# AgentCard 取得
+# AgentCard 取得 (Bash)
 curl http://localhost:30200/.well-known/agent-card.json
+
+# AgentCard 取得 (PowerShell)
+Invoke-RestMethod -Uri "http://localhost:30200/.well-known/agent-card.json"
 ```
 
 #### 3-1. 通常メッセージ (評価スキップ)
 
 センシティブキーワードを含まないメッセージ。評価エージェントは呼び出されず、そのまま応答します。
 
+**Bash:**
 ```bash
 curl -s -X POST http://localhost:30200/agent \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"こんにちは！今日はいい天気ですね。"}]}}}'
+```
+
+**PowerShell:**
+```powershell
+$body = @'
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "kind": "message",
+      "role": "user",
+      "messageId": "msg-001",
+      "parts": [{"kind": "text", "text": "こんにちは！今日はいい天気ですね。"}]
+    }
+  }
+}
+'@
+$response = Invoke-RestMethod -Uri "http://localhost:30200/agent" -Method Post -Body $body -ContentType "application/json"
+$response.result.parts[0].text
 ```
 
 期待レスポンス: `[Chatbot] こんにちは！... について承りました。`
@@ -238,30 +263,75 @@ curl -s -X POST http://localhost:30200/agent \
 
 `kill`, `attack`, `bomb`, `殺`, `暴力` などのキーワードを含むメッセージ。Violence / Sexual 両 Evaluator が並列呼び出しされます。
 
+**Bash:**
 ```bash
 curl -s -X POST http://localhost:30200/agent \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-002","parts":[{"kind":"text","text":"attack!!"}]}}}'
 ```
 
-期待レスポンス: `暴力的なコンテンツ (重大度: Medium)` の警告と `Violence: score=4`
+**PowerShell:**
+```powershell
+$body = @'
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "kind": "message",
+      "role": "user",
+      "messageId": "msg-002",
+      "parts": [{"kind": "text", "text": "attack!!"}]
+    }
+  }
+}
+'@
+$response = Invoke-RestMethod -Uri "http://localhost:30200/agent" -Method Post -Body $body -ContentType "application/json"
+$response.result.parts[0].text
+```
+
+期待レスポンス: `暴力的なコンテンツ (重大度: Medium)` の警告と評価結果
 
 #### 3-3. 性的コンテンツの評価 (SexualEvaluator トリガー)
 
 `sex`, `nude`, `sexual`, `性的`, `裸`, `ポルノ` などのキーワードを含むメッセージ。Violence / Sexual 両 Evaluator が並列呼び出しされます。
 
+**Bash:**
 ```bash
 curl -s -X POST http://localhost:30200/agent \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-003","parts":[{"kind":"text","text":"sexual content"}]}}}'
 ```
 
-期待レスポンス (モック動作時): `Sexual: score=0` ※ Azure Content Safety 設定済みの場合は実スコアが返ります
+**PowerShell:**
+```powershell
+$body = @'
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "kind": "message",
+      "role": "user",
+      "messageId": "msg-003",
+      "parts": [{"kind": "text", "text": "sexual content"}]
+    }
+  }
+}
+'@
+$response = Invoke-RestMethod -Uri "http://localhost:30200/agent" -Method Post -Body $body -ContentType "application/json"
+$response.result.parts[0].text
+```
+
+期待レスポンス (モック動作時): Sexual評価結果 (Azure Content Safety 設定済みの場合は実スコアが返ります)
 
 #### 3-4. 各 Evaluator への直接呼び出し
 
 Chatbot を経由せず、個別エージェントを直接呼び出す場合:
 
+**Bash:**
 ```bash
 # ViolenceEvaluator を直接呼び出し
 curl -s -X POST http://localhost:30201/agent \
@@ -271,7 +341,50 @@ curl -s -X POST http://localhost:30201/agent \
 # SexualEvaluator を直接呼び出し
 curl -s -X POST http://localhost:30202/agent \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"評価したいテキスト"}]}}}'
+  -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"Hello, how are you?"}]}}}'
+```
+
+**PowerShell:**
+```powershell
+# ViolenceEvaluator を直接呼び出し
+$body = @'
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "kind": "message",
+      "role": "user",
+      "messageId": "msg-001",
+      "parts": [{"kind": "text", "text": "kill the enemy"}]
+    }
+  }
+}
+'@
+$response = Invoke-RestMethod -Uri "http://localhost:30201/agent" -Method Post -Body $body -ContentType "application/json"
+$response.result.parts[0].text
+# 期待結果: {"category":"Violence","score":4,"severity":"Medium","flagged":true}
+
+# SexualEvaluator を直接呼び出し
+$body = @'
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "message/send",
+  "params": {
+    "message": {
+      "kind": "message",
+      "role": "user",
+      "messageId": "msg-002",
+      "parts": [{"kind": "text", "text": "Hello, how are you?"}]
+    }
+  }
+}
+'@
+$response = Invoke-RestMethod -Uri "http://localhost:30202/agent" -Method Post -Body $body -ContentType "application/json"
+$response.result.parts[0].text
+# 期待結果: {"category":"Sexual","score":0,"severity":"None","flagged":false}
 ```
 
 ### 4. 後片付け

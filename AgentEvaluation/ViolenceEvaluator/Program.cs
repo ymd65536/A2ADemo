@@ -33,6 +33,14 @@ if (!string.IsNullOrEmpty(contentSafetyEndpoint) && !string.IsNullOrEmpty(conten
         new ContentSafetyClient(new Uri(contentSafetyEndpoint), new AzureKeyCredential(contentSafetyApiKey)));
 }
 
+// 評価フレームワークを使った評価器を登録
+builder.Services.AddSingleton<IContentEvaluator<ViolenceEvaluationResult>>(sp =>
+{
+    var csClient = sp.GetService<ContentSafetyClient>();
+    var logger = sp.GetRequiredService<ILogger<ViolenceEvaluator>>();
+    return new ViolenceEvaluator(csClient, logger);
+});
+
 var app = builder.Build();
 
 app.Use(async (context, next) =>
@@ -45,32 +53,47 @@ app.UseOpenTelemetryPrometheusScrapingEndpoint();
 app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
 
 var taskManager = new TaskManager();
-var csClient = app.Services.GetService<ContentSafetyClient?>();
-var agent = new ViolenceEvaluatorAgent(csClient, app.Logger);
+var evaluator = app.Services.GetRequiredService<IContentEvaluator<ViolenceEvaluationResult>>();
+var agent = new ViolenceEvaluatorAgent(evaluator, app.Logger);
 agent.Attach(taskManager);
 
 app.MapA2A(taskManager, "/agent");
 app.MapWellKnownAgentCard(taskManager, "/agent");
 app.Run();
 
-public class ViolenceEvaluatorAgent(ContentSafetyClient? csClient, ILogger logger)
+// 評価フレームワークのインターフェース定義
+public interface IContentEvaluator<TResult>
 {
-    private static readonly ActivitySource Source = new("ViolenceEvaluator.Custom");
+    Task<ContentEvaluationResult<TResult>> EvaluateAsync(
+        string input,
+        CancellationToken cancellationToken = default);
+}
 
-    public void Attach(ITaskManager taskManager)
+public record ContentEvaluationResult<TResult>
+{
+    public required TResult Result { get; init; }
+    public Dictionary<string, object> Metrics { get; init; } = new();
+    public Dictionary<string, string> Metadata { get; init; } = new();
+}
+
+// 評価結果の型定義
+public record ViolenceEvaluationResult
+{
+    public string Category { get; init; } = "Violence";
+    public int Score { get; init; }
+    public string Severity { get; init; } = "None";
+    public bool Flagged { get; init; }
+}
+
+// 評価フレームワークを使った評価器実装
+public class ViolenceEvaluator(ContentSafetyClient? csClient, ILogger<ViolenceEvaluator> logger)
+    : IContentEvaluator<ViolenceEvaluationResult>
+{
+    public async Task<ContentEvaluationResult<ViolenceEvaluationResult>> EvaluateAsync(
+        string input,
+        CancellationToken cancellationToken = default)
     {
-        taskManager.OnMessageReceived = EvaluateAsync;
-        taskManager.OnAgentCardQuery = GetAgentCardAsync;
-    }
-
-    private async Task<A2AResponse> EvaluateAsync(MessageSendParams messageParams, CancellationToken ct)
-    {
-        using var activity = Source.StartActivity("暴力コンテンツ評価");
-
-        var inputText = messageParams.Message.Parts.OfType<TextPart>().FirstOrDefault()?.Text ?? "";
-
-        // JSON 形式 {"text":"..."} でも plain text でも受け付ける
-        var textToEvaluate = TryExtractText(inputText);
+        var textToEvaluate = TryExtractText(input);
 
         int score;
         string severity;
@@ -81,7 +104,7 @@ public class ViolenceEvaluatorAgent(ContentSafetyClient? csClient, ILogger logge
             // Azure AI Content Safety で評価
             var options = new AnalyzeTextOptions(textToEvaluate);
             options.Categories.Add(TextCategory.Violence);
-            var response = await csClient.AnalyzeTextAsync(options, ct);
+            var response = await csClient.AnalyzeTextAsync(options, cancellationToken);
             var result = response.Value.CategoriesAnalysis
                 .FirstOrDefault(c => c.Category == TextCategory.Violence);
             score = result?.Severity ?? 0;
@@ -90,48 +113,41 @@ public class ViolenceEvaluatorAgent(ContentSafetyClient? csClient, ILogger logge
         }
         else
         {
-            // モード: Content Safety 未設定の場合はキーワードで簡易判定 (開発用)
+            // モック: Content Safety 未設定の場合はキーワードで簡易判定 (開発用)
             logger.LogWarning("[ViolenceEvaluator] AzureContentSafety が未設定です。簡易評価を使用します。");
-            var keywords = new[] { "kill", "attack", "violence", "殺", "暴力", "攻撃" };
+            var keywords = new[] { "kill", "attack", "violence", "bomb", "殺", "暴力", "攻撃" };
             flagged = keywords.Any(k => textToEvaluate.Contains(k, StringComparison.OrdinalIgnoreCase));
             score = flagged ? 4 : 0;
             severity = flagged ? "Medium" : "None";
         }
 
-        activity?.SetTag("violence.score", score);
-        activity?.SetTag("violence.flagged", flagged);
-
-        var resultJson = JsonSerializer.Serialize(new
-        {
-            category = "Violence",
-            score,
-            severity,
-            flagged
-        });
-
         logger.LogInformation("[ViolenceEvaluator] text={Text} score={Score} flagged={Flagged}",
             textToEvaluate[..Math.Min(50, textToEvaluate.Length)], score, flagged);
 
-        return new AgentMessage
+        var evaluationResult = new ViolenceEvaluationResult
         {
-            Role = MessageRole.Agent,
-            MessageId = Guid.NewGuid().ToString(),
-            Parts = [new TextPart { Text = resultJson }]
+            Score = score,
+            Severity = severity,
+            Flagged = flagged
+        };
+
+        return new ContentEvaluationResult<ViolenceEvaluationResult>
+        {
+            Result = evaluationResult,
+            Metrics = new Dictionary<string, object>
+            {
+                ["violence_score"] = score,
+                ["violence_severity"] = severity,
+                ["violence_flagged"] = flagged,
+                ["input_length"] = textToEvaluate.Length
+            },
+            Metadata = new Dictionary<string, string>
+            {
+                ["evaluator_type"] = "Violence",
+                ["evaluation_timestamp"] = DateTime.UtcNow.ToString("O")
+            }
         };
     }
-
-    private Task<AgentCard> GetAgentCardAsync(string agentUrl, CancellationToken ct) =>
-        Task.FromResult(new AgentCard
-        {
-            Name = "Violence Evaluator",
-            Description = "テキストに含まれる暴力的なコンテンツを Azure AI Content Safety で評価するエージェントです。",
-            Url = agentUrl,
-            Capabilities = new AgentCapabilities
-            {
-                Streaming = false,
-                Extensions = new()
-            }
-        });
 
     private static string TryExtractText(string input)
     {
@@ -147,4 +163,63 @@ public class ViolenceEvaluatorAgent(ContentSafetyClient? csClient, ILogger logge
         }
         return input;
     }
+}
+
+public class ViolenceEvaluatorAgent(IContentEvaluator<ViolenceEvaluationResult> evaluator, ILogger logger)
+{
+    private static readonly ActivitySource Source = new("ViolenceEvaluator.Custom");
+
+    public void Attach(ITaskManager taskManager)
+    {
+        taskManager.OnMessageReceived = EvaluateAsync;
+        taskManager.OnAgentCardQuery = GetAgentCardAsync;
+    }
+
+    private async Task<A2AResponse> EvaluateAsync(MessageSendParams messageParams, CancellationToken ct)
+    {
+        using var activity = Source.StartActivity("暴力コンテンツ評価");
+
+        var inputText = messageParams.Message.Parts.OfType<TextPart>().FirstOrDefault()?.Text ?? "";
+
+        // 評価器を使用して評価
+        var evaluationResult = await evaluator.EvaluateAsync(inputText, ct);
+        var result = evaluationResult.Result;
+
+        activity?.SetTag("violence.score", result.Score);
+        activity?.SetTag("violence.flagged", result.Flagged);
+
+        // メトリクスをアクティビティに追加
+        foreach (var metric in evaluationResult.Metrics)
+        {
+            activity?.SetTag($"metric.{metric.Key}", metric.Value);
+        }
+
+        var resultJson = JsonSerializer.Serialize(new
+        {
+            category = result.Category,
+            score = result.Score,
+            severity = result.Severity,
+            flagged = result.Flagged
+        });
+
+        return new AgentMessage
+        {
+            Role = MessageRole.Agent,
+            MessageId = Guid.NewGuid().ToString(),
+            Parts = [new TextPart { Text = resultJson }]
+        };
+    }
+
+    private Task<AgentCard> GetAgentCardAsync(string agentUrl, CancellationToken ct) =>
+        Task.FromResult(new AgentCard
+        {
+            Name = "Violence Evaluator",
+            Description = "テキストに含まれる暴力的なコンテンツを評価フレームワークパターンで評価するエージェントです。",
+            Url = agentUrl,
+            Capabilities = new AgentCapabilities
+            {
+                Streaming = false,
+                Extensions = new()
+            }
+        });
 }

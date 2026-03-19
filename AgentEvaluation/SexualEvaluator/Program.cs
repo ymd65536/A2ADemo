@@ -33,6 +33,14 @@ if (!string.IsNullOrEmpty(contentSafetyEndpoint) && !string.IsNullOrEmpty(conten
         new ContentSafetyClient(new Uri(contentSafetyEndpoint), new AzureKeyCredential(contentSafetyApiKey)));
 }
 
+// 評価フレームワークを使った評価器を登録
+builder.Services.AddSingleton<IContentEvaluator<SexualEvaluationResult>>(sp =>
+{
+    var csClient = sp.GetService<ContentSafetyClient>();
+    var logger = sp.GetRequiredService<ILogger<SexualEvaluator>>();
+    return new SexualEvaluator(csClient, logger);
+});
+
 var app = builder.Build();
 
 app.Use(async (context, next) =>
@@ -45,30 +53,47 @@ app.UseOpenTelemetryPrometheusScrapingEndpoint();
 app.MapGet("/healthz", () => Results.Ok(new { status = "healthy" }));
 
 var taskManager = new TaskManager();
-var csClient = app.Services.GetService<ContentSafetyClient?>();
-var agent = new SexualEvaluatorAgent(csClient, app.Logger);
+var evaluator = app.Services.GetRequiredService<IContentEvaluator<SexualEvaluationResult>>();
+var agent = new SexualEvaluatorAgent(evaluator, app.Logger);
 agent.Attach(taskManager);
 
 app.MapA2A(taskManager, "/agent");
 app.MapWellKnownAgentCard(taskManager, "/agent");
 app.Run();
 
-public class SexualEvaluatorAgent(ContentSafetyClient? csClient, ILogger logger)
+// 評価フレームワークのインターフェース定義
+public interface IContentEvaluator<TResult>
 {
-    private static readonly ActivitySource Source = new("SexualEvaluator.Custom");
+    Task<ContentEvaluationResult<TResult>> EvaluateAsync(
+        string input,
+        CancellationToken cancellationToken = default);
+}
 
-    public void Attach(ITaskManager taskManager)
+public record ContentEvaluationResult<TResult>
+{
+    public required TResult Result { get; init; }
+    public Dictionary<string, object> Metrics { get; init; } = new();
+    public Dictionary<string, string> Metadata { get; init; } = new();
+}
+
+// 評価結果の型定義
+public record SexualEvaluationResult
+{
+    public string Category { get; init; } = "Sexual";
+    public int Score { get; init; }
+    public string Severity { get; init; } = "None";
+    public bool Flagged { get; init; }
+}
+
+// 評価フレームワークを使った評価器実装
+public class SexualEvaluator(ContentSafetyClient? csClient, ILogger<SexualEvaluator> logger)
+    : IContentEvaluator<SexualEvaluationResult>
+{
+    public async Task<ContentEvaluationResult<SexualEvaluationResult>> EvaluateAsync(
+        string input,
+        CancellationToken cancellationToken = default)
     {
-        taskManager.OnMessageReceived = EvaluateAsync;
-        taskManager.OnAgentCardQuery = GetAgentCardAsync;
-    }
-
-    private async Task<A2AResponse> EvaluateAsync(MessageSendParams messageParams, CancellationToken ct)
-    {
-        using var activity = Source.StartActivity("性的コンテンツ評価");
-
-        var inputText = messageParams.Message.Parts.OfType<TextPart>().FirstOrDefault()?.Text ?? "";
-        var textToEvaluate = TryExtractText(inputText);
+        var textToEvaluate = TryExtractText(input);
 
         int score;
         string severity;
@@ -79,7 +104,7 @@ public class SexualEvaluatorAgent(ContentSafetyClient? csClient, ILogger logger)
             // Azure AI Content Safety で評価
             var options = new AnalyzeTextOptions(textToEvaluate);
             options.Categories.Add(TextCategory.Sexual);
-            var response = await csClient.AnalyzeTextAsync(options, ct);
+            var response = await csClient.AnalyzeTextAsync(options, cancellationToken);
             var result = response.Value.CategoriesAnalysis
                 .FirstOrDefault(c => c.Category == TextCategory.Sexual);
             score = result?.Severity ?? 0;
@@ -88,7 +113,7 @@ public class SexualEvaluatorAgent(ContentSafetyClient? csClient, ILogger logger)
         }
         else
         {
-            // モード: Content Safety 未設定の場合は簡易判定 (開発用)
+            // モック: Content Safety 未設定の場合は簡易判定 (開発用)
             logger.LogWarning("[SexualEvaluator] AzureContentSafety が未設定です。簡易評価を使用します。");
             // 開発用モックは常に安全と判定
             flagged = false;
@@ -96,40 +121,33 @@ public class SexualEvaluatorAgent(ContentSafetyClient? csClient, ILogger logger)
             severity = "None";
         }
 
-        activity?.SetTag("sexual.score", score);
-        activity?.SetTag("sexual.flagged", flagged);
-
-        var resultJson = JsonSerializer.Serialize(new
-        {
-            category = "Sexual",
-            score,
-            severity,
-            flagged
-        });
-
         logger.LogInformation("[SexualEvaluator] text={Text} score={Score} flagged={Flagged}",
             textToEvaluate[..Math.Min(50, textToEvaluate.Length)], score, flagged);
 
-        return new AgentMessage
+        var evaluationResult = new SexualEvaluationResult
         {
-            Role = MessageRole.Agent,
-            MessageId = Guid.NewGuid().ToString(),
-            Parts = [new TextPart { Text = resultJson }]
+            Score = score,
+            Severity = severity,
+            Flagged = flagged
+        };
+
+        return new ContentEvaluationResult<SexualEvaluationResult>
+        {
+            Result = evaluationResult,
+            Metrics = new Dictionary<string, object>
+            {
+                ["sexual_score"] = score,
+                ["sexual_severity"] = severity,
+                ["sexual_flagged"] = flagged,
+                ["input_length"] = textToEvaluate.Length
+            },
+            Metadata = new Dictionary<string, string>
+            {
+                ["evaluator_type"] = "Sexual",
+                ["evaluation_timestamp"] = DateTime.UtcNow.ToString("O")
+            }
         };
     }
-
-    private Task<AgentCard> GetAgentCardAsync(string agentUrl, CancellationToken ct) =>
-        Task.FromResult(new AgentCard
-        {
-            Name = "Sexual Evaluator",
-            Description = "テキストに含まれる性的なコンテンツを Azure AI Content Safety で評価するエージェントです。",
-            Url = agentUrl,
-            Capabilities = new AgentCapabilities
-            {
-                Streaming = false,
-                Extensions = new()
-            }
-        });
 
     private static string TryExtractText(string input)
     {
@@ -145,4 +163,63 @@ public class SexualEvaluatorAgent(ContentSafetyClient? csClient, ILogger logger)
         }
         return input;
     }
+}
+
+public class SexualEvaluatorAgent(IContentEvaluator<SexualEvaluationResult> evaluator, ILogger logger)
+{
+    private static readonly ActivitySource Source = new("SexualEvaluator.Custom");
+
+    public void Attach(ITaskManager taskManager)
+    {
+        taskManager.OnMessageReceived = EvaluateAsync;
+        taskManager.OnAgentCardQuery = GetAgentCardAsync;
+    }
+
+    private async Task<A2AResponse> EvaluateAsync(MessageSendParams messageParams, CancellationToken ct)
+    {
+        using var activity = Source.StartActivity("性的コンテンツ評価");
+
+        var inputText = messageParams.Message.Parts.OfType<TextPart>().FirstOrDefault()?.Text ?? "";
+
+        // 評価器を使用して評価
+        var evaluationResult = await evaluator.EvaluateAsync(inputText, ct);
+        var result = evaluationResult.Result;
+
+        activity?.SetTag("sexual.score", result.Score);
+        activity?.SetTag("sexual.flagged", result.Flagged);
+
+        // メトリクスをアクティビティに追加
+        foreach (var metric in evaluationResult.Metrics)
+        {
+            activity?.SetTag($"metric.{metric.Key}", metric.Value);
+        }
+
+        var resultJson = JsonSerializer.Serialize(new
+        {
+            category = result.Category,
+            score = result.Score,
+            severity = result.Severity,
+            flagged = result.Flagged
+        });
+
+        return new AgentMessage
+        {
+            Role = MessageRole.Agent,
+            MessageId = Guid.NewGuid().ToString(),
+            Parts = [new TextPart { Text = resultJson }]
+        };
+    }
+
+    private Task<AgentCard> GetAgentCardAsync(string agentUrl, CancellationToken ct) =>
+        Task.FromResult(new AgentCard
+        {
+            Name = "Sexual Evaluator",
+            Description = "テキストに含まれる性的なコンテンツを評価フレームワークパターンで評価するエージェントです。",
+            Url = agentUrl,
+            Capabilities = new AgentCapabilities
+            {
+                Streaming = false,
+                Extensions = new()
+            }
+        });
 }
