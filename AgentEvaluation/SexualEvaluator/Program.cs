@@ -27,10 +27,19 @@ builder.Services.AddOpenTelemetry()
 // 未設定の場合は登録しない (GetService<ContentSafetyClient>() が null を返す)
 var contentSafetyEndpoint = builder.Configuration["AzureContentSafety:Endpoint"];
 var contentSafetyApiKey = builder.Configuration["AzureContentSafety:ApiKey"];
+var isProduction = builder.Environment.IsProduction();
+
 if (!string.IsNullOrEmpty(contentSafetyEndpoint) && !string.IsNullOrEmpty(contentSafetyApiKey))
 {
     builder.Services.AddSingleton(
         new ContentSafetyClient(new Uri(contentSafetyEndpoint), new AzureKeyCredential(contentSafetyApiKey)));
+}
+else if (isProduction)
+{
+    // Production モードでは Azure Content Safety の設定が必須
+    throw new InvalidOperationException(
+        "[SexualEvaluator] Production モードでは AzureContentSafety:Endpoint と AzureContentSafety:ApiKey の設定が必須です。" +
+        "環境変数 AzureContentSafety__Endpoint / AzureContentSafety__ApiKey を設定してください。");
 }
 
 // 評価フレームワークを使った評価器を登録
@@ -38,7 +47,7 @@ builder.Services.AddSingleton<IContentEvaluator<SexualEvaluationResult>>(sp =>
 {
     var csClient = sp.GetService<ContentSafetyClient>();
     var logger = sp.GetRequiredService<ILogger<SexualEvaluator>>();
-    return new SexualEvaluator(csClient, logger);
+    return new SexualEvaluator(csClient, logger, allowMock: !isProduction);
 });
 
 var app = builder.Build();
@@ -86,7 +95,7 @@ public record SexualEvaluationResult
 }
 
 // 評価フレームワークを使った評価器実装
-public class SexualEvaluator(ContentSafetyClient? csClient, ILogger<SexualEvaluator> logger)
+public class SexualEvaluator(ContentSafetyClient? csClient, ILogger<SexualEvaluator> logger, bool allowMock)
     : IContentEvaluator<SexualEvaluationResult>
 {
     public async Task<ContentEvaluationResult<SexualEvaluationResult>> EvaluateAsync(
@@ -111,14 +120,20 @@ public class SexualEvaluator(ContentSafetyClient? csClient, ILogger<SexualEvalua
             flagged = score >= 2;
             severity = score switch { 0 => "None", 2 => "Low", 4 => "Medium", _ => "High" };
         }
-        else
+        else if (allowMock)
         {
             // モック: Content Safety 未設定の場合は簡易判定 (開発用)
-            logger.LogWarning("[SexualEvaluator] AzureContentSafety が未設定です。簡易評価を使用します。");
+            logger.LogWarning("[SexualEvaluator] AzureContentSafety が未設定です。モック評価を使用します。");
             // 開発用モックは常に安全と判定
             flagged = false;
             score = 0;
             severity = "None";
+        }
+        else
+        {
+            // Production モードで csClient が null の場合は起動時に捕捉されるはずだが安全ネットとして例外
+            throw new InvalidOperationException(
+                "[SexualEvaluator] Production モードでは Azure Content Safety の設定が必須です。");
         }
 
         logger.LogInformation("[SexualEvaluator] text={Text} score={Score} flagged={Flagged}",

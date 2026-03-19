@@ -500,7 +500,70 @@ kubectl delete namespace agent-evaluation
 
 ## Azure AI Content Safety の設定 (任意)
 
-未設定の場合は開発用モックで動作しますが、本番評価時は以下のコマンドで Secret を作成します。
+未設定の場合は開発用モックで動作しますが、本番評価時は Azure AI Content Safety を使用します。  
+`ASPNETCORE_ENVIRONMENT=Production` の場合、設定がないとアプリ起動時に例外が発生します。
+
+### 前提条件
+
+- Azure サブスクリプションがあること
+- Azure CLI がインストールされていること (`az --version` で確認)
+
+### 1. Azure AI Content Safety リソースの作成
+
+**Azure Portal を使う場合:**
+
+1. [Azure Portal](https://portal.azure.com) にサインイン
+2. 「リソースの作成」→「AI + Machine Learning」→「Content Safety」を選択
+3. 以下の項目を入力してリソースを作成:
+   - **サブスクリプション**: 使用するサブスクリプション
+   - **リソースグループ**: 任意のリソースグループ
+   - **リージョン**: `East US` など (Content Safety がサポートされているリージョン)
+   - **名前**: 任意の名前 (例: `my-content-safety`)
+   - **価格レベル**: `Free F0` (月 5,000 テキスト解析まで無料) または `Standard S0`
+
+**Azure CLI を使う場合:**
+
+```bash
+# リソースグループ作成 (既存のものを使う場合は不要)
+az group create --name my-rg --location eastus
+
+# Content Safety リソース作成
+az cognitiveservices account create \
+  --name my-content-safety \
+  --resource-group my-rg \
+  --kind ContentSafety \
+  --sku F0 \
+  --location eastus \
+  --yes
+```
+
+### 2. エンドポイントと API キーの取得
+
+**Azure Portal を使う場合:**
+
+1. 作成したリソースを開く
+2. 左メニュー「リソース管理」→「キーとエンドポイント」を選択
+3. **エンドポイント** と **キー 1** をコピー
+
+**Azure CLI を使う場合:**
+
+```bash
+# エンドポイント取得
+az cognitiveservices account show \
+  --name my-content-safety \
+  --resource-group my-rg \
+  --query "properties.endpoint" -o tsv
+
+# API キー取得
+az cognitiveservices account keys list \
+  --name my-content-safety \
+  --resource-group my-rg \
+  --query "key1" -o tsv
+```
+
+### 3. Kubernetes Secret の作成
+
+取得したエンドポイントと API キーを Kubernetes Secret に設定します。
 
 ```bash
 kubectl create secret generic azure-content-safety-secret \
@@ -509,6 +572,53 @@ kubectl create secret generic azure-content-safety-secret \
   -n agent-evaluation \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+> `<name>` と `<key>` をステップ 2 で取得した値に置き換えてください。
+
+**PowerShell の場合:**
+
+```powershell
+$endpoint = "https://<name>.cognitiveservices.azure.com"
+$apiKey   = "<key>"
+
+kubectl create secret generic azure-content-safety-secret `
+  --from-literal=endpoint="$endpoint" `
+  --from-literal=api-key="$apiKey" `
+  -n agent-evaluation `
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+### 4. Pod の再起動
+
+Secret を反映させるために ViolenceEvaluator と SexualEvaluator を再起動します。
+
+```bash
+kubectl rollout restart deployment/violence-evaluator deployment/sexual-evaluator -n agent-evaluation
+kubectl rollout status deployment/violence-evaluator deployment/sexual-evaluator -n agent-evaluation
+```
+
+### 5. 動作確認
+
+再起動後、Azure AI Content Safety が有効になっていることを確認します。
+
+```bash
+# ViolenceEvaluator のログで "ContentSafetyClient" が初期化されているか確認
+kubectl logs -n agent-evaluation deployment/violence-evaluator --tail=20
+
+# 実際にリクエストを送信して Azure Content Safety による評価結果を確認
+curl -s -X POST http://localhost:30201/agent \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"kill the enemy"}]}}}'
+```
+
+Secret を削除してモックに戻す場合:
+
+```bash
+kubectl delete secret azure-content-safety-secret -n agent-evaluation
+kubectl rollout restart deployment/violence-evaluator deployment/sexual-evaluator -n agent-evaluation
+```
+
+> **注意**: `ASPNETCORE_ENVIRONMENT=Production` の場合は Secret がないと起動に失敗します。`infrastructure.yaml` のデフォルト環境変数は `Development` のため、ローカル Rancher Desktop 環境では Secret なしでも起動できます。
 
 ## 可観測性
 

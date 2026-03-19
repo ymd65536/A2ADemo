@@ -27,10 +27,19 @@ builder.Services.AddOpenTelemetry()
 // 未設定の場合は登録しない (GetService<ContentSafetyClient>() が null を返す)
 var contentSafetyEndpoint = builder.Configuration["AzureContentSafety:Endpoint"];
 var contentSafetyApiKey = builder.Configuration["AzureContentSafety:ApiKey"];
+var isProduction = builder.Environment.IsProduction();
+
 if (!string.IsNullOrEmpty(contentSafetyEndpoint) && !string.IsNullOrEmpty(contentSafetyApiKey))
 {
     builder.Services.AddSingleton(
         new ContentSafetyClient(new Uri(contentSafetyEndpoint), new AzureKeyCredential(contentSafetyApiKey)));
+}
+else if (isProduction)
+{
+    // Production モードでは Azure Content Safety の設定が必須
+    throw new InvalidOperationException(
+        "[ViolenceEvaluator] Production モードでは AzureContentSafety:Endpoint と AzureContentSafety:ApiKey の設定が必須です。" +
+        "環境変数 AzureContentSafety__Endpoint / AzureContentSafety__ApiKey を設定してください。");
 }
 
 // 評価フレームワークを使った評価器を登録
@@ -38,7 +47,7 @@ builder.Services.AddSingleton<IContentEvaluator<ViolenceEvaluationResult>>(sp =>
 {
     var csClient = sp.GetService<ContentSafetyClient>();
     var logger = sp.GetRequiredService<ILogger<ViolenceEvaluator>>();
-    return new ViolenceEvaluator(csClient, logger);
+    return new ViolenceEvaluator(csClient, logger, allowMock: !isProduction);
 });
 
 var app = builder.Build();
@@ -86,7 +95,7 @@ public record ViolenceEvaluationResult
 }
 
 // 評価フレームワークを使った評価器実装
-public class ViolenceEvaluator(ContentSafetyClient? csClient, ILogger<ViolenceEvaluator> logger)
+public class ViolenceEvaluator(ContentSafetyClient? csClient, ILogger<ViolenceEvaluator> logger, bool allowMock)
     : IContentEvaluator<ViolenceEvaluationResult>
 {
     public async Task<ContentEvaluationResult<ViolenceEvaluationResult>> EvaluateAsync(
@@ -111,14 +120,20 @@ public class ViolenceEvaluator(ContentSafetyClient? csClient, ILogger<ViolenceEv
             flagged = score >= 2;
             severity = score switch { 0 => "None", 2 => "Low", 4 => "Medium", _ => "High" };
         }
-        else
+        else if (allowMock)
         {
             // モック: Content Safety 未設定の場合はキーワードで簡易判定 (開発用)
-            logger.LogWarning("[ViolenceEvaluator] AzureContentSafety が未設定です。簡易評価を使用します。");
+            logger.LogWarning("[ViolenceEvaluator] AzureContentSafety が未設定です。モック評価を使用します。");
             var keywords = new[] { "kill", "attack", "violence", "bomb", "殺", "暴力", "攻撃" };
             flagged = keywords.Any(k => textToEvaluate.Contains(k, StringComparison.OrdinalIgnoreCase));
             score = flagged ? 4 : 0;
             severity = flagged ? "Medium" : "None";
+        }
+        else
+        {
+            // Production モードで csClient が null の場合は起動時に捕捉されるはずだが安全ネットとして例外
+            throw new InvalidOperationException(
+                "[ViolenceEvaluator] Production モードでは Azure Content Safety の設定が必須です。");
         }
 
         logger.LogInformation("[ViolenceEvaluator] text={Text} score={Score} flagged={Flagged}",
