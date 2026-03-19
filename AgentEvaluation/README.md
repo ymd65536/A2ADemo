@@ -739,14 +739,47 @@ kubectl create secret generic azure-openai-secret `
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-### 4. Pod の再起動
+### 4. ローカル開発時: dotnet user-secrets で設定
+
+Kubernetes Secret を使わずローカルで動作確認したい場合は `dotnet user-secrets` を使います。
+
+```bash
+cd AgentEvaluation/Chatbot
+dotnet user-secrets init   # 初回のみ (UserSecretsId が .csproj に追加される)
+dotnet user-secrets set "AzureOpenAI:Endpoint"       "https://<name>.openai.azure.com"
+dotnet user-secrets set "AzureOpenAI:DeploymentName" "gpt-4o"
+dotnet user-secrets set "AzureOpenAI:ApiKey"         "<key>"   # DefaultAzureCredential を使う場合は不要
+```
+
+**PowerShell の場合:**
+
+```powershell
+Set-Location AgentEvaluation/Chatbot
+dotnet user-secrets init
+dotnet user-secrets set "AzureOpenAI:Endpoint"       "https://<name>.openai.azure.com"
+dotnet user-secrets set "AzureOpenAI:DeploymentName" "gpt-4o"
+dotnet user-secrets set "AzureOpenAI:ApiKey"         "<key>"
+```
+
+設定確認・削除:
+
+```bash
+dotnet user-secrets list                            # 設定一覧
+dotnet user-secrets remove "AzureOpenAI:ApiKey"    # 個別削除
+dotnet user-secrets clear                           # 全削除
+```
+
+> `user-secrets` は開発環境のみ有効です (`ASPNETCORE_ENVIRONMENT=Development`)。  
+> Docker / Kubernetes 環境では Kubernetes Secret から読み込まれます。
+
+### 5. Pod の再起動
 
 ```bash
 kubectl rollout restart deployment/chatbot -n agent-evaluation
 kubectl rollout status deployment/chatbot -n agent-evaluation
 ```
 
-### 5. 動作確認
+### 6. 動作確認
 
 ```bash
 # Chatbot のログで "AIAgent 応答完了" が出力されているか確認
