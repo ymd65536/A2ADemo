@@ -145,7 +145,8 @@ public class ChatbotAgent(IConfiguration config, ILogger logger)
         try
         {
             // AgentCard を取得してエンドポイント URL を解決
-            var cardResolver = new A2ACardResolver(new Uri($"{baseUrl}/agent"));
+            // A2A SDK v0.3.3-preview: /.well-known/agent-card.json をルートから解決する
+            var cardResolver = new A2ACardResolver(new Uri(baseUrl));
             var card = await cardResolver.GetAgentCardAsync();
             var client = new A2AClient(new Uri(card.Url));
 

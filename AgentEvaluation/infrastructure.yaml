@@ -15,8 +15,9 @@
 #   ViolenceEvaluator: http://violence-evaluator-svc/agent
 #   SexualEvaluator  : http://sexual-evaluator-svc/agent
 #
-# ポートマッピング (Minikube NodePort):
-#   Chatbot        : http://localhost:30200/agent
+# ポートマッピング (NodePort):
+#   Chatbot         : http://localhost:30200/agent
+#   AgentCard       : http://localhost:30200/.well-known/agent-card.json
 #   Aspire Dashboard: http://localhost:30088
 #
 # 使い方:
@@ -50,7 +51,7 @@ data:
 # ============================================================
 # エージェント 1: ViolenceEvaluator
 # 役割: テキストの暴力的コンテンツを Azure AI Content Safety で評価
-# A2A エンドポイント: GET /.well-known/agent.json / POST /agent
+# A2A エンドポイント: GET /.well-known/agent-card.json / POST /agent
 # Capability: violence-evaluation
 # ============================================================
 apiVersion: apps/v1
@@ -122,7 +123,7 @@ spec:
 # ============================================================
 # エージェント 2: SexualEvaluator
 # 役割: テキストの性的コンテンツを Azure AI Content Safety で評価
-# A2A エンドポイント: GET /.well-known/agent.json / POST /agent
+# A2A エンドポイント: GET /.well-known/agent-card.json / POST /agent
 # Capability: sexual-evaluation
 # ============================================================
 apiVersion: apps/v1
@@ -194,7 +195,7 @@ spec:
 # ============================================================
 # エージェント 3: Chatbot
 # 役割: ユーザー対話 + 内容に応じて評価エージェントを A2A 呼び出し
-# A2A エンドポイント: GET /.well-known/agent.json / POST /agent
+# A2A エンドポイント: GET /.well-known/agent-card.json / POST /agent
 # Capability: chat
 # ============================================================
 apiVersion: apps/v1
