@@ -50,6 +50,25 @@ data:
   endpoint: ""  # base64 エンコード済みエンドポイントを設定
   api-key: ""   # base64 エンコード済み API キーを設定
 ---
+# 3. Azure OpenAI の認証情報 Secret (プレースホルダー)
+#    実際の値は以下のコマンドで作成すること:
+#    kubectl create secret generic azure-openai-secret \
+#      --from-literal=endpoint="https://<name>.openai.azure.com" \
+#      --from-literal=deployment-name="<deployment>" \
+#      --from-literal=api-key="<key>" \
+#      -n agent-evaluation
+#    ※ AKS Workload Identity を使用する場合は api-key を省略可能
+apiVersion: v1
+kind: Secret
+metadata:
+  name: azure-openai-secret
+  namespace: agent-evaluation
+type: Opaque
+data:
+  endpoint: ""         # base64 エンコード済みエンドポイントを設定
+  deployment-name: ""  # base64 エンコード済みデプロイ名を設定
+  api-key: ""          # base64 エンコード済み API キーを設定 (省略可)
+---
 # ============================================================
 # エージェント 1: ViolenceEvaluator
 # 役割: テキストの暴力的コンテンツを Azure AI Content Safety で評価
@@ -227,6 +246,25 @@ spec:
         # A2A 接続先: EvaluationAgent の K8s Service DNS
         - name: Evaluators__EvaluationAgentUrl
           value: "http://evaluation-agent-svc"
+        # Azure OpenAI (Microsoft Agent Framework) - optional
+        - name: AzureOpenAI__Endpoint
+          valueFrom:
+            secretKeyRef:
+              name: azure-openai-secret
+              key: endpoint
+              optional: true
+        - name: AzureOpenAI__DeploymentName
+          valueFrom:
+            secretKeyRef:
+              name: azure-openai-secret
+              key: deployment-name
+              optional: true
+        - name: AzureOpenAI__ApiKey
+          valueFrom:
+            secretKeyRef:
+              name: azure-openai-secret
+              key: api-key
+              optional: true
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "http://aspire-dashboard-svc:18890"
         - name: OTEL_EXPORTER_OTLP_PROTOCOL

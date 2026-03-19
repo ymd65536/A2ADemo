@@ -171,7 +171,10 @@ curl -s -X POST http://localhost:30202/agent \
 | ローカルポート (開発時) | `5202` |
 | K8s NodePort | `30200` |
 | EvaluationAgent 接続先 (K8s内) | `http://evaluation-agent-svc` |
+| AI エンジン | Azure OpenAI (Microsoft Agent Framework) / モックフォールバック |
 
+**Microsoft Agent Framework** (`Microsoft.Agents.AI.OpenAI`) を使用して Azure OpenAI でユーザーメッセージに応答します。  
+Azure OpenAI が未設定の場合はモック応答にフォールバックして動作します (開発・テスト用)。  
 センシティブなキーワードを含むメッセージに対して EvaluationAgent を A2A で呼び出しし、評価結果をそのまま返します。
 
 **Chatbot の内部フロー**
@@ -179,15 +182,28 @@ curl -s -X POST http://localhost:30202/agent \
 ```
 POST /agent (ユーザーメッセージ受信)
   │
+  ├─ Azure OpenAI が設定済み → AIAgent.RunAsync() で LLM 応答を生成
+  │   └─ 未設定 → モック応答 (開発用フォールバック)
+  │
   ├─ キーワード判定 (NeedsEvaluation)
-  │    ├─ 該当なし → "[User]\n...\n[Chatbot]\n..." 形式でない応答を返す
-  │    └─ 該当あり → Q&A ペアを構築し EvaluationAgent を呼び出し
+  │    ├─ 該当なし → "[User]\n...\n[Chatbot]\n..." ペアをそのまま返す
+  │    └─ 該当あり → Q&A ペアを構築し EvaluationAgent を A2A で呼び出し
   │
   └─ A2A POST /agent → EvaluationAgent
             └─ 評価結果 ([Evaluation] セクション付き) をそのまま返す
 ```
 
 センシティブと判断されるキーワード例: `kill`, `attack`, `bomb`, `sex`, `殺`, `暴力`, `性的` など
+
+**Azure OpenAI の環境変数**
+
+| 変数名 | 説明 |
+|---|---|
+| `AzureOpenAI__Endpoint` | Azure OpenAI エンドポイント (例: `https://<name>.openai.azure.com`) |
+| `AzureOpenAI__DeploymentName` | デプロイ名 (例: `gpt-4o`) |
+| `AzureOpenAI__ApiKey` | API キー (省略時は DefaultAzureCredential を使用) |
+
+> Azure OpenAI の設定手順は [Azure OpenAI の設定](#azure-openai-の設定-任意) を参照してください。
 
 ---
 
@@ -627,6 +643,127 @@ kubectl rollout restart deployment/violence-evaluator deployment/sexual-evaluato
 ```
 
 > **注意**: `ASPNETCORE_ENVIRONMENT=Production` の場合は Secret がないと起動に失敗します。`infrastructure.yaml` のデフォルト環境変数は `Development` のため、ローカル Rancher Desktop 環境では Secret なしでも起動できます。
+
+---
+
+## Azure OpenAI の設定 (任意)
+
+未設定の場合は開発用モックで動作します。Azure OpenAI を設定することで、Chatbot が実際の LLM で応答するようになります。
+
+### 前提条件
+
+- Azure サブスクリプションがあること
+- Azure AI Foundry プロジェクトがあること、または Azure OpenAI リソースがあること
+
+### 1. Azure OpenAI リソースの作成
+
+**Azure Portal を使う場合:**
+
+1. [Azure AI Foundry](https://ai.azure.com) または [Azure Portal](https://portal.azure.com) にサインイン
+2. Azure AI Foundry の場合: プロジェクトを作成し、モデル (`gpt-4o` など) をデプロイ
+3. Azure Portal の場合: 「リソースの作成」→「Azure OpenAI」を選択してリソースを作成
+
+**Azure CLI を使う場合:**
+
+```bash
+# Azure OpenAI リソース作成
+az cognitiveservices account create \
+  --name my-openai \
+  --resource-group my-rg \
+  --kind OpenAI \
+  --sku S0 \
+  --location eastus \
+  --yes
+
+# モデルをデプロイ
+az cognitiveservices account deployment create \
+  --name my-openai \
+  --resource-group my-rg \
+  --deployment-name gpt-4o \
+  --model-name gpt-4o \
+  --model-version "2024-08-06" \
+  --model-format OpenAI \
+  --sku-capacity 10 \
+  --sku-name GlobalStandard
+```
+
+### 2. エンドポイントとデプロイ名の取得
+
+**Azure Portal を使う場合:**
+
+1. 作成したリソース (または AI Foundry プロジェクト) を開く
+2. **エンドポイント** と **デプロイ名** をコピー
+3. API キーが必要な場合: 「リソース管理」→「キーとエンドポイント」から **キー 1** をコピー
+
+**Azure CLI を使う場合:**
+
+```bash
+# エンドポイント取得
+az cognitiveservices account show \
+  --name my-openai \
+  --resource-group my-rg \
+  --query "properties.endpoint" -o tsv
+
+# API キー取得 (Workload Identity を使う場合は不要)
+az cognitiveservices account keys list \
+  --name my-openai \
+  --resource-group my-rg \
+  --query "key1" -o tsv
+```
+
+### 3. Kubernetes Secret の作成
+
+```bash
+kubectl create secret generic azure-openai-secret \
+  --from-literal=endpoint="https://<name>.openai.azure.com" \
+  --from-literal=deployment-name="gpt-4o" \
+  --from-literal=api-key="<key>" \
+  -n agent-evaluation \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+> AKS Workload Identity を使う場合は `api-key` を省略できます。その場合 `DefaultAzureCredential` が使用されます。
+
+**PowerShell の場合:**
+
+```powershell
+$endpoint       = "https://<name>.openai.azure.com"
+$deploymentName = "gpt-4o"
+$apiKey         = "<key>"
+
+kubectl create secret generic azure-openai-secret `
+  --from-literal=endpoint="$endpoint" `
+  --from-literal=deployment-name="$deploymentName" `
+  --from-literal=api-key="$apiKey" `
+  -n agent-evaluation `
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+### 4. Pod の再起動
+
+```bash
+kubectl rollout restart deployment/chatbot -n agent-evaluation
+kubectl rollout status deployment/chatbot -n agent-evaluation
+```
+
+### 5. 動作確認
+
+```bash
+# Chatbot のログで "AIAgent 応答完了" が出力されているか確認
+kubectl logs -n agent-evaluation deployment/chatbot --tail=20
+
+# 通常メッセージ送信テスト
+curl -s -X POST http://localhost:30200/agent \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"東京の天気を教えてください"}]}}}'
+```
+
+Secret を削除してモックに戻す場合:
+
+```bash
+kubectl delete secret azure-openai-secret -n agent-evaluation
+kubectl rollout restart deployment/chatbot -n agent-evaluation
+```
 
 ## 可観測性
 
