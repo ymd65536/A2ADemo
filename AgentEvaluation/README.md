@@ -28,20 +28,21 @@ Browser
   └─ HTTP → ChatbotViewer (:30203)  ← Blazor Server Web UI
                └─ HTTP POST /agent (A2A message/send)
                     └─ Chatbot (:30200)
-                         ├─ A2A → ViolenceEvaluator (violence-evaluator-svc:80)
-                         └─ A2A → SexualEvaluator   (sexual-evaluator-svc:80)
+                         └─ A2A → EvaluationAgent (evaluation-agent-svc:80)  ← [User]/[Chatbot] Q&A ペアを渡す
+                              ├─ A2A → ViolenceEvaluator (violence-evaluator-svc:80)  ← 常時呼び出し
+                              └─ A2A → SexualEvaluator   (sexual-evaluator-svc:80)    ← 性的キーワード検出時
 
-# EvaluationAgent は独立した評価オーケストレーター
+# EvaluationAgent は単体でも呼び出し可能
 Client
   └─ HTTP POST /agent ("[User]\n...\n[Chatbot]\n..." 形式)
        └─ EvaluationAgent (:30204)
-            ├─ A2A → ViolenceEvaluator (violence-evaluator-svc:80)  ← 常時呼び出し (モック)
-            └─ A2A → SexualEvaluator   (sexual-evaluator-svc:80)    ← 性的キーワード検出時
+            ├─ A2A → ViolenceEvaluator (violence-evaluator-svc:80)
+            └─ A2A → SexualEvaluator   (sexual-evaluator-svc:80)  ← 性的キーワード検出時
 ```
 
-Chatbot はユーザーメッセージを受信し、センシティブなキーワードを含む場合に限り ViolenceEvaluator と SexualEvaluator を**並列**で A2A 呼び出しします。評価結果に問題がなければ通常の応答を、フラグが立った場合は安全上の警告を返します。
+Chatbot はユーザーメッセージを受信し、センシティブなキーワードを含む場合に EvaluationAgent を A2A で呼び出します。Q&A ペアを `[User]/[Chatbot]` 形式で渡し、EvaluationAgent の評価結果をそのまま返します。
 
-EvaluationAgent は `[User]/[Chatbot]` 形式の Q&A ペアを受け取り、ViolenceEvaluator を必ず呼び出し（モック）、性的キーワードが含まれる場合は SexualEvaluator も呼び出します。評価結果を `[Evaluation]` セクションとして Q&A ペアに付加して返します。
+EvaluationAgent は `[User]/[Chatbot]` 形式の Q&A ペアを受け取り、ViolenceEvaluator を常時呼び出し、性的キーワードが含まれる場合は SexualEvaluator も呼び出します。評価結果を `[Evaluation]` セクションとして Q&A ペアに付加して返します。
 
 ## ディレクトリ構成
 
@@ -169,26 +170,21 @@ curl -s -X POST http://localhost:30202/agent \
 | AgentCard | `GET /.well-known/agent-card.json` |
 | ローカルポート (開発時) | `5202` |
 | K8s NodePort | `30200` |
+| EvaluationAgent 接続先 (K8s内) | `http://evaluation-agent-svc` |
 
-センシティブなキーワードを含むメッセージに対して ViolenceEvaluator / SexualEvaluator を並列呼び出しし、評価結果を踏まえた応答を返します。
+センシティブなキーワードを含むメッセージに対して EvaluationAgent を A2A で呼び出しし、評価結果をそのまま返します。
 
-**Chatbot から Evaluator を呼び出す内部フロー**
+**Chatbot の内部フロー**
 
 ```
 POST /agent (ユーザーメッセージ受信)
   │
   ├─ キーワード判定 (NeedsEvaluation)
-  │    ├─ 該当なし → 通常応答を返す
-  │    └─ 該当あり → 評価エージェントを並列呼び出し
+  │    ├─ 該当なし → "[User]\n...\n[Chatbot]\n..." 形式でない応答を返す
+  │    └─ 該当あり → Q&A ペアを構築し EvaluationAgent を呼び出し
   │
-  ├─ A2A GET /.well-known/agent-card.json → violence-evaluator-svc:80
-  ├─ A2A GET /.well-known/agent-card.json → sexual-evaluator-svc:80
-  ├─ A2A POST /agent → violence-evaluator-svc:80  (並列)
-  ├─ A2A POST /agent → sexual-evaluator-svc:80    (並列)
-  │
-  └─ 評価結果に応じて応答を構築
-       ├─ flagged=false → 「安全確認済み」応答
-       └─ flagged=true  → 「問題あり」警告応答
+  └─ A2A POST /agent → EvaluationAgent
+            └─ 評価結果 ([Evaluation] セクション付き) をそのまま返す
 ```
 
 センシティブと判断されるキーワード例: `kill`, `attack`, `bomb`, `sex`, `殺`, `暴力`, `性的` など
@@ -366,9 +362,9 @@ $response.result.parts[0].text
 
 期待レスポンス: `[Chatbot] こんにちは！... について承りました。`
 
-#### 3-2. 暴力的コンテンツの評価 (ViolenceEvaluator トリガー)
+#### 3-2. 暴力的コンテンツの評価 (EvaluationAgent 経由)
 
-`kill`, `attack`, `bomb`, `殺`, `暴力` などのキーワードを含むメッセージ。Violence / Sexual 両 Evaluator が並列呼び出しされます。
+`kill`, `attack`, `bomb`, `殺`, `暴力` などのキーワードを含むメッセージ。Chatbot が Q&A ペアを EvaluationAgent に渡し、EvaluationAgent が ViolenceEvaluator を呼び出します。
 
 **Bash:**
 ```bash
@@ -398,11 +394,11 @@ $response = Invoke-RestMethod -Uri "http://localhost:30200/agent" -Method Post -
 $response.result.parts[0].text
 ```
 
-期待レスポンス: `暴力的なコンテンツ (重大度: Medium)` の警告と評価結果
+期待レスポンス: EvaluationAgent から返ってくる `[Evaluation]` セクション付きの評価結果
 
-#### 3-3. 性的コンテンツの評価 (SexualEvaluator トリガー)
+#### 3-3. 性的コンテンツの評価 (EvaluationAgent 経由)
 
-`sex`, `nude`, `sexual`, `性的`, `裸`, `ポルノ` などのキーワードを含むメッセージ。Violence / Sexual 両 Evaluator が並列呼び出しされます。
+`sex`, `nude`, `sexual`, `性的`, `裸`, `ポルノ` などのキーワードを含むメッセージ。Chatbot が Q&A ペアを EvaluationAgent に渡し、EvaluationAgent が ViolenceEvaluator + SexualEvaluator 両方を呼び出します。
 
 **Bash:**
 ```bash
@@ -432,7 +428,7 @@ $response = Invoke-RestMethod -Uri "http://localhost:30200/agent" -Method Post -
 $response.result.parts[0].text
 ```
 
-期待レスポンス (モック動作時): Sexual評価結果 (Azure Content Safety 設定済みの場合は実スコアが返ります)
+期待レスポンス: EvaluationAgent から返ってくる `[Evaluation]` セクション付きの評価結果 (Violence + Sexual 両方)
 
 #### 3-4. 各 Evaluator への直接呼び出し
 
