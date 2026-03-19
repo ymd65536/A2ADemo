@@ -101,13 +101,13 @@ spec:
             path: /healthz
             port: 8080
           initialDelaySeconds: 5
-          periodSeconds: 10
+          periodSeconds: 60
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8080
           initialDelaySeconds: 15
-          periodSeconds: 20
+          periodSeconds: 60
 ---
 # ViolenceEvaluator Service (NodePort: 外部システムから直接呼び出し可能)
 apiVersion: v1
@@ -175,13 +175,13 @@ spec:
             path: /healthz
             port: 8080
           initialDelaySeconds: 5
-          periodSeconds: 10
+          periodSeconds: 60
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8080
           initialDelaySeconds: 15
-          periodSeconds: 20
+          periodSeconds: 60
 ---
 # SexualEvaluator Service (NodePort: 外部システムから直接呼び出し可能)
 apiVersion: v1
@@ -224,11 +224,9 @@ spec:
         image: chatbot:latest
         imagePullPolicy: Never
         env:
-        # A2A 接続先: ViolenceEvaluator / SexualEvaluator の K8s Service DNS
-        - name: Evaluators__ViolenceEvaluatorUrl
-          value: "http://violence-evaluator-svc"
-        - name: Evaluators__SexualEvaluatorUrl
-          value: "http://sexual-evaluator-svc"
+        # A2A 接続先: EvaluationAgent の K8s Service DNS
+        - name: Evaluators__EvaluationAgentUrl
+          value: "http://evaluation-agent-svc"
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: "http://aspire-dashboard-svc:18890"
         - name: OTEL_EXPORTER_OTLP_PROTOCOL
@@ -242,13 +240,13 @@ spec:
             path: /healthz
             port: 8080
           initialDelaySeconds: 5
-          periodSeconds: 10
+          periodSeconds: 60
         livenessProbe:
           httpGet:
             path: /healthz
             port: 8080
           initialDelaySeconds: 15
-          periodSeconds: 20
+          periodSeconds: 60
 ---
 # Chatbot Service (NodePort: クライアントからのアクセス用)
 apiVersion: v1
@@ -362,13 +360,13 @@ spec:
             path: /
             port: 8080
           initialDelaySeconds: 10
-          periodSeconds: 10
+          periodSeconds: 60
         livenessProbe:
           httpGet:
             path: /
             port: 8080
           initialDelaySeconds: 20
-          periodSeconds: 20
+          periodSeconds: 60
 ---
 # ChatbotViewer Service (NodePort: ブラウザからのアクセス用)
 apiVersion: v1
@@ -384,3 +382,70 @@ spec:
   - port: 80
     targetPort: 8080
     nodePort: 30203  # http://localhost:30203 でアクセス可能
+---
+# ============================================================
+# EvaluationAgent - Q&A ペア評価エージェント
+# 役割: [User]/[Chatbot] 形式の Q&A ペアを受け取り
+#       Violence / Sexual 評価エージェントを A2A 呼び出しして評価する
+# A2A エンドポイント: GET /.well-known/agent-card.json / POST /agent
+# URL: http://localhost:30204/agent
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evaluation-agent
+  namespace: agent-evaluation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evaluation-agent
+  template:
+    metadata:
+      labels:
+        app: evaluation-agent
+    spec:
+      containers:
+      - name: evaluation-agent
+        image: evaluation-agent:latest
+        imagePullPolicy: Never
+        env:
+        - name: Evaluators__ViolenceEvaluatorUrl
+          value: "http://violence-evaluator-svc"
+        - name: Evaluators__SexualEvaluatorUrl
+          value: "http://sexual-evaluator-svc"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://aspire-dashboard-svc:18890"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_EXPORTER_OTLP_INSECURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 60
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 60
+---
+# EvaluationAgent Service (NodePort)
+apiVersion: v1
+kind: Service
+metadata:
+  name: evaluation-agent-svc
+  namespace: agent-evaluation
+spec:
+  type: NodePort
+  selector:
+    app: evaluation-agent
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30204  # http://localhost:30204/agent でアクセス可能

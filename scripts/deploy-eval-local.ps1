@@ -21,6 +21,7 @@ System Architecture:
   docker build -t sexual-evaluator:latest   ./AgentEvaluation/SexualEvaluator
   docker build -t chatbot:latest            ./AgentEvaluation/Chatbot
   docker build -t chatbot-viewer:latest     ./AgentEvaluation/ChatbotViewer
+  docker build -t evaluation-agent:latest   ./AgentEvaluation/EvaluationAgent
 
 Azure AI Content Safety の設定 (任意: 未設定時はモック評価を使用):
   kubectl create secret generic azure-content-safety-secret `
@@ -98,7 +99,8 @@ $DEPLOYMENTS = @(
     "sexual-evaluator",
     "chatbot",
     "aspire-dashboard",
-    "chatbot-viewer"
+    "chatbot-viewer",
+    "evaluation-agent"
 )
 
 foreach ($dep in $DEPLOYMENTS) {
@@ -119,7 +121,10 @@ Write-Host "---------------------------------------------------" -ForegroundColo
 
 # Rancher Desktop / Minikube は localhost で NodePort に直接アクセス可能
 $MINIKUBE_IP = "localhost"
-Write-Host "  Chatbot (A2A)         : http://${MINIKUBE_IP}:30200/agent" -ForegroundColor White  Write-Host "  ChatbotViewer (Web UI) : http://${MINIKUBE_IP}:30203" -ForegroundColor WhiteWrite-Host "  Aspire Dashboard (OTel): http://${MINIKUBE_IP}:30088" -ForegroundColor White
+Write-Host "  Chatbot (A2A)         : http://${MINIKUBE_IP}:30200/agent" -ForegroundColor White
+Write-Host "  EvaluationAgent (A2A) : http://${MINIKUBE_IP}:30204/agent" -ForegroundColor White
+Write-Host "  ChatbotViewer (Web UI) : http://${MINIKUBE_IP}:30203" -ForegroundColor White
+Write-Host "  Aspire Dashboard (OTel): http://${MINIKUBE_IP}:30088" -ForegroundColor White
 Write-Host ""
 Write-Host "  AgentCard 確認:" -ForegroundColor White
 Write-Host "    curl http://${MINIKUBE_IP}:30200/.well-known/agent.json" -ForegroundColor Gray

@@ -17,7 +17,9 @@
 #   eval $(minikube docker-env)
 #   docker build -t violence-evaluator:latest ./AgentEvaluation/ViolenceEvaluator
 #   docker build -t sexual-evaluator:latest   ./AgentEvaluation/SexualEvaluator
-#   docker build -t chatbot:latest            ./AgentEvaluation/Chatbot  docker build -t chatbot-viewer:latest     ./AgentEvaluation/ChatbotViewer#
+#   docker build -t chatbot:latest            ./AgentEvaluation/Chatbot
+#   docker build -t chatbot-viewer:latest     ./AgentEvaluation/ChatbotViewer
+#   docker build -t evaluation-agent:latest   ./AgentEvaluation/EvaluationAgent
 # Azure AI Content Safety の設定 (任意: 未設定時はモック評価を使用):
 #   kubectl create secret generic azure-content-safety-secret \
 #     --from-literal=endpoint="https://<name>.cognitiveservices.azure.com" \
@@ -87,6 +89,7 @@ DEPLOYMENTS=(
   "chatbot"
   "aspire-dashboard"
   "chatbot-viewer"
+  "evaluation-agent"
 )
 for dep in "${DEPLOYMENTS[@]}"; do
   echo "  Waiting: $dep ..."
@@ -101,7 +104,10 @@ echo "==> [4/4] アクセス情報"
 echo "---------------------------------------------------"
 # Rancher Desktop は localhost で NodePort に直接アクセス可能
 MINIKUBE_IP="localhost"
-echo "  Chatbot (A2A)         : http://${MINIKUBE_IP}:30200/agent"  echo "  ChatbotViewer (Web UI) : http://${MINIKUBE_IP}:30203"echo "  Aspire Dashboard (OTel): http://${MINIKUBE_IP}:30088"
+echo "  Chatbot (A2A)         : http://${MINIKUBE_IP}:30200/agent"
+echo "  EvaluationAgent (A2A) : http://${MINIKUBE_IP}:30204/agent"
+echo "  ChatbotViewer (Web UI) : http://${MINIKUBE_IP}:30203"
+echo "  Aspire Dashboard (OTel): http://${MINIKUBE_IP}:30088"
 echo ""
 echo "  AgentCard 確認:"
 echo "    curl http://${MINIKUBE_IP}:30200/.well-known/agent.json"

@@ -4,7 +4,6 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using System.Diagnostics;
-using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -84,93 +83,57 @@ public class ChatbotAgent(IConfiguration config, ILogger logger)
         logger.LogInformation("[Chatbot] message={Message} needsEval={NeedsEval}",
             userText[..Math.Min(80, userText.Length)], needsEval);
 
+        // モック応答 (本番では LLM の応答に差し替え)
+        var chatbotAnswer = needsEval
+            ? "申し訳ありませんが、そのご質問にはお答えできません。"
+            : $"{userText} について承りました。何かお手伝いできることはありますか？";
+
+        var qaPair = $"[User]\n{userText}\n[Chatbot]\n{chatbotAnswer}";
+
         if (!needsEval)
         {
             // 評価不要: そのまま応答
-            return BuildReply($"[Chatbot] {userText} について承りました。何かお手伝いできることはありますか？");
+            return BuildReply(qaPair);
         }
 
-        // ─── 評価エージェントを A2A で並列呼び出し ───
-        var evalPayload = JsonSerializer.Serialize(new { text = userText });
+        // ─── EvaluationAgent を A2A で呼び出し (Q&A ペアを渡す) ───
+        var evaluationAgentUrl = config["Evaluators:EvaluationAgentUrl"]
+            ?? "http://evaluation-agent-svc";
 
-        var violenceUrl = config["Evaluators:ViolenceEvaluatorUrl"]
-            ?? "http://violence-evaluator-svc";
-        var sexualUrl = config["Evaluators:SexualEvaluatorUrl"]
-            ?? "http://sexual-evaluator-svc";
+        var evaluationResult = await CallEvaluationAgentAsync(evaluationAgentUrl, qaPair, ct);
 
-        EvalResult? violenceResult = null;
-        EvalResult? sexualResult = null;
+        activity?.SetTag("evaluation.result.length", evaluationResult?.Length ?? 0);
 
-        await Task.WhenAll(
-            CallEvaluatorAsync(violenceUrl, evalPayload, ct)
-                .ContinueWith(t => violenceResult = t.Result, ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Current),
-            CallEvaluatorAsync(sexualUrl, evalPayload, ct)
-                .ContinueWith(t => sexualResult = t.Result, ct, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Current)
-        );
-
-        activity?.SetTag("violence.flagged", violenceResult?.Flagged);
-        activity?.SetTag("sexual.flagged", sexualResult?.Flagged);
-
-        // ─── 評価結果に応じて応答を構築 ───
-        var issues = new List<string>();
-        if (violenceResult?.Flagged == true)
-            issues.Add($"暴力的なコンテンツ (重大度: {violenceResult.Severity})");
-        if (sexualResult?.Flagged == true)
-            issues.Add($"性的なコンテンツ (重大度: {sexualResult.Severity})");
-
-        string replyText;
-        if (issues.Count > 0)
-        {
-            replyText = $"[Chatbot] 申し訳ありませんが、入力されたメッセージに問題のあるコンテンツが含まれているため、応答できません。\n" +
-                        $"検出された問題: {string.Join(", ", issues)}\n" +
-                        $"Violence: score={violenceResult?.Score ?? 0} / Sexual: score={sexualResult?.Score ?? 0}";
-            logger.LogWarning("[Chatbot] フラグ付きコンテンツを検出しました: {Issues}", string.Join(", ", issues));
-        }
-        else
-        {
-            replyText = $"[Chatbot] メッセージの安全性を確認しました。\n" +
-                        $"Violence: score={violenceResult?.Score ?? 0} ({violenceResult?.Severity ?? "N/A"}) ✓\n" +
-                        $"Sexual:   score={sexualResult?.Score ?? 0} ({sexualResult?.Severity ?? "N/A"}) ✓\n\n" +
-                        $"「{userText}」のご質問にお答えします。";
-        }
-
-        return BuildReply(replyText);
+        // EvaluationAgent の応答をそのまま返す (フォールバック: Q&A ペアのみ)
+        return BuildReply(evaluationResult ?? qaPair);
     }
 
     /// <summary>
-    /// 評価エージェントを A2A で呼び出す
+    /// EvaluationAgent を A2A で呼び出し、評価済みテキストを返す
     /// </summary>
-    private async Task<EvalResult?> CallEvaluatorAsync(string baseUrl, string evalPayload, CancellationToken ct)
+    private async Task<string?> CallEvaluationAgentAsync(string baseUrl, string qaPair, CancellationToken ct)
     {
         try
         {
-            // AgentCard を取得してエンドポイント URL を解決
-            // A2A SDK v0.3.3-preview: /.well-known/agent-card.json をルートから解決する
             var cardResolver = new A2ACardResolver(new Uri(baseUrl));
             var card = await cardResolver.GetAgentCardAsync();
             var client = new A2AClient(new Uri(card.Url));
 
-            // A2A message/send でテキストを送信
             var response = await client.SendMessageAsync(new MessageSendParams
             {
                 Message = new AgentMessage
                 {
                     Role = MessageRole.User,
-                    Parts = [new TextPart { Text = evalPayload }]
+                    Parts = [new TextPart { Text = qaPair }]
                 }
             }, ct);
 
             if (response is AgentMessage agentMsg)
-            {
-                var resultText = agentMsg.Parts.OfType<TextPart>().FirstOrDefault()?.Text ?? "{}";
-                var evalResult = JsonSerializer.Deserialize<EvalResult>(resultText,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                return evalResult;
-            }
+                return agentMsg.Parts.OfType<TextPart>().FirstOrDefault()?.Text;
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "[Chatbot] 評価エージェント呼び出し失敗: {Url}", baseUrl);
+            logger.LogError(ex, "[Chatbot] EvaluationAgent 呼び出し失敗: {Url}", baseUrl);
         }
         return null;
     }
@@ -202,5 +165,4 @@ public class ChatbotAgent(IConfiguration config, ILogger logger)
         });
 }
 
-/// <summary>評価エージェントからの応答を表す</summary>
-public record EvalResult(string Category, int Score, string Severity, bool Flagged);
+

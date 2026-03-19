@@ -16,9 +16,10 @@
 
 1. **Violence Evaluator**: 暴力的なコンテンツを評価するエージェント。
 2. **Sexual Evaluator**: 性的なコンテンツを評価するエージェント。
-3. **chatbot**: チャットボットエージェント。ユーザーとの対話を通じて、様々なタスクやシナリオに対して評価を行います。応答内容はいったん各Evaluatorを呼び出してから返す形であり、Evaluatorを呼び出すかどうかはユーザーからの質問内容によって判断されます。
+3. **Chatbot**: チャットボットエージェント。ユーザーとの対話を通じて、様々なタスクやシナリオに対して評価を行います。応答内容はいったん各Evaluatorを呼び出してから返す形であり、Evaluatorを呼び出すかどうかはユーザーからの質問内容によって判断されます。
+4. **EvaluationAgent**: `[User]/[Chatbot]` 形式の Q&A ペアを受け取り、ViolenceEvaluator / SexualEvaluator を A2A 呼び出しして評価し、評価結果をまとめて返すエージェント。
 
-3つのエージェントとは別に、Blazor Server で実装された **ChatbotViewer** が Kubernetes 上で動作し、Chatbot の AgentCard 確認とメッセージ送信を行える Web UI として機能します。
+4つのエージェントとは別に、Blazor Server で実装された **ChatbotViewer** が Kubernetes 上で動作し、Chatbot の AgentCard 確認とメッセージ送信を行える Web UI として機能します。
 
 ### A2A 接続フロー
 
@@ -29,9 +30,18 @@ Browser
                     └─ Chatbot (:30200)
                          ├─ A2A → ViolenceEvaluator (violence-evaluator-svc:80)
                          └─ A2A → SexualEvaluator   (sexual-evaluator-svc:80)
+
+# EvaluationAgent は独立した評価オーケストレーター
+Client
+  └─ HTTP POST /agent ("[User]\n...\n[Chatbot]\n..." 形式)
+       └─ EvaluationAgent (:30204)
+            ├─ A2A → ViolenceEvaluator (violence-evaluator-svc:80)  ← 常時呼び出し (モック)
+            └─ A2A → SexualEvaluator   (sexual-evaluator-svc:80)    ← 性的キーワード検出時
 ```
 
 Chatbot はユーザーメッセージを受信し、センシティブなキーワードを含む場合に限り ViolenceEvaluator と SexualEvaluator を**並列**で A2A 呼び出しします。評価結果に問題がなければ通常の応答を、フラグが立った場合は安全上の警告を返します。
+
+EvaluationAgent は `[User]/[Chatbot]` 形式の Q&A ペアを受け取り、ViolenceEvaluator を必ず呼び出し（モック）、性的キーワードが含まれる場合は SexualEvaluator も呼び出します。評価結果を `[Evaluation]` セクションとして Q&A ペアに付加して返します。
 
 ## ディレクトリ構成
 
@@ -60,17 +70,24 @@ AgentEvaluation/
 │   ├── appsettings.Development.json
 │   ├── dockerfile
 │   └── Properties/launchSettings.json
-└── ChatbotViewer/               # Web UI (Blazor Server)
-    ├── ChatbotViewer.csproj
+├── ChatbotViewer/               # Web UI (Blazor Server)
+│   ├── ChatbotViewer.csproj
+│   ├── Program.cs
+│   ├── appsettings.json
+│   ├── appsettings.Development.json
+│   ├── dockerfile
+│   ├── Components/
+│   │   ├── App.razor
+│   │   ├── Layout/              # MainLayout, NavMenu
+│   │   └── Pages/               # Home (AgentCard表示), SendRequest (メッセージ送信)
+│   └── wwwroot/
+└── EvaluationAgent/             # エージェント 4 (Q&A ペア評価オーケストレーター)
+    ├── EvaluationAgent.csproj
     ├── Program.cs
     ├── appsettings.json
     ├── appsettings.Development.json
     ├── dockerfile
-    ├── Components/
-    │   ├── App.razor
-    │   ├── Layout/              # MainLayout, NavMenu
-    │   └── Pages/               # Home (AgentCard表示), SendRequest (メッセージ送信)
-    └── wwwroot/
+    └── Properties/launchSettings.json
 ```
 
 ## エージェント詳細
@@ -230,6 +247,7 @@ docker build -t violence-evaluator:latest ./AgentEvaluation/ViolenceEvaluator
 docker build -t sexual-evaluator:latest   ./AgentEvaluation/SexualEvaluator
 docker build -t chatbot:latest            ./AgentEvaluation/Chatbot
 docker build -t chatbot-viewer:latest     ./AgentEvaluation/ChatbotViewer
+docker build -t evaluation-agent:latest   ./AgentEvaluation/EvaluationAgent
 ```
 
 > **Note**: Rancher Desktop は `docker build` したイメージをそのまま K8s から参照できます。`eval $(minikube docker-env)` は不要です。
@@ -257,6 +275,62 @@ Invoke-RestMethod -Uri "http://localhost:30200/.well-known/agent-card.json"
 ```
 
 > **Web UI でも確認できます**: ブラウザで `http://localhost:30203` を開くと ChatbotViewer が起動しており、AgentCard の確認とメッセージ送信を GUI で行えます。
+
+---
+
+### EvaluationAgent
+
+| 項目 | 値 |
+|---|---|
+| A2A エンドポイント | `POST /agent` |
+| AgentCard | `GET /.well-known/agent-card.json` |
+| ローカルポート (開発時) | `5203` |
+| K8s NodePort | `30204` |
+| K8s Service | `evaluation-agent-svc:80` |
+| ViolenceEvaluator 接続先 | `http://violence-evaluator-svc` |
+| SexualEvaluator 接続先 | `http://sexual-evaluator-svc` |
+
+`[User]\n{質問}\n[Chatbot]\n{回答}` 形式のテキストを受け取り、Violence / Sexual 評価を行います。
+- **モック動作**: ViolenceEvaluator は常時呼び出し、SexualEvaluator は性的キーワード検出時のみ呼び出し
+- `AzureContentSafety` 未設定時は各 Evaluator のモック動作に依存
+
+**リクエスト形式**
+
+```json
+{
+  "jsonrpc": "2.0", "id": "1", "method": "message/send",
+  "params": {
+    "message": {
+      "kind": "message",
+      "role": "user", "messageId": "msg-001",
+      "parts": [{ "kind": "text", "text": "[User]\nattack!!\n[Chatbot]\n申し訳ありませんが、そのリクエストにはお応えできません。" }]
+    }
+  }
+}
+```
+
+**レスポンス例**
+
+```
+[User]
+attack!!
+[Chatbot]
+申し訳ありませんが、そのリクエストにはお応えできません。
+[Evaluation]
+Violence: score=4 (Medium) ⚠️ flagged
+
+総合判定: ⚠️ 問題のあるコンテンツを検出
+```
+
+**直接呼び出し例**
+
+```bash
+curl -s -X POST http://localhost:30204/agent \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":"1","method":"message/send","params":{"message":{"kind":"message","role":"user","messageId":"msg-001","parts":[{"kind":"text","text":"[User]\nattack!!\n[Chatbot]\n申し訳ありません。"}]}}}'
+```
+
+---
 
 #### 3-1. 通常メッセージ (評価スキップ)
 
@@ -450,6 +524,7 @@ Aspire Dashboard を使って全エージェントの OpenTelemetry トレース
 | `http://localhost:30201` | ViolenceEvaluator (A2A エンドポイント) |
 | `http://localhost:30202` | SexualEvaluator (A2A エンドポイント) |
 | `http://localhost:30203` | **ChatbotViewer** (Blazor Server Web UI) |
+| `http://localhost:30204` | **EvaluationAgent** (A2A エンドポイント) |
 | `http://localhost:30088` | Aspire Dashboard (OTel トレース/メトリクス UI) |
 | `http://localhost:30200/metrics` | Chatbot Prometheus メトリクス |
 
