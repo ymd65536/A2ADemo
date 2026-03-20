@@ -97,7 +97,7 @@ app.MapPost("/agent/stream", async (HttpContext httpContext, HttpRequest req) =>
             .GetProperty("text")
             .GetString() ?? "";
 
-        app.Logger.LogInformation("[Chatbot/Stream] message={Message}", userText[..Math.Min(80, userText.Length)]);
+        app.Logger.LogInformation("[Chatbot/Stream] message_length={MessageLength}", userText.Length);
 
         // ─── LLM ストリーミング応答 ───
         var chatbotAnswer = new System.Text.StringBuilder();
