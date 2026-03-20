@@ -1,7 +1,7 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 # NuGet の接続リトライ設定 (Rancher Desktop 等の不安定なネットワーク向け)
-ENV DOTNET_NUGET_SIGNATURE_VERIFICATION=false
+ENV NUGET_ENABLE_ENHANCED_HTTP_RETRY=true
 COPY ["ViolenceEvaluator.csproj", "./"]
 RUN dotnet restore
 COPY . .
