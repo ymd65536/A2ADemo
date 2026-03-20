@@ -310,8 +310,8 @@ spec:
     spec:
       containers:
       - name: dashboard
-        image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
-        imagePullPolicy: Always
+        image: mcr.microsoft.com/dotnet/aspire-dashboard:9.5.2
+        imagePullPolicy: IfNotPresent
         env:
         - name: ASPIRE_ALLOW_UNSECURED_TRANSPORT
           value: "true"
