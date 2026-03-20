@@ -18,6 +18,7 @@
 2. **Sexual Evaluator**: 性的なコンテンツを評価するエージェント。
 3. **Chatbot**: チャットボットエージェント。ユーザーとの対話を通じて、様々なタスクやシナリオに対して評価を行います。応答内容はいったん各Evaluatorを呼び出してから返す形であり、Evaluatorを呼び出すかどうかはユーザーからの質問内容によって判断されます。
 4. **EvaluationAgent**: `[User]/[Chatbot]` 形式の Q&A ペアを受け取り、ViolenceEvaluator / SexualEvaluator を A2A 呼び出しして評価し、評価結果をまとめて返すエージェント。
+※ユーザーからもコメント内容に応じて呼ばれるEvaluation Agentは変わります。
 
 4つのエージェントとは別に、Blazor Server で実装された **ChatbotViewer** が Kubernetes 上で動作し、Chatbot の AgentCard 確認とメッセージ送信を行える Web UI として機能します。
 
