@@ -127,7 +127,8 @@ Write-Host "  ChatbotViewer (Web UI) : http://${MINIKUBE_IP}:30203" -ForegroundC
 Write-Host "  Aspire Dashboard (OTel): http://${MINIKUBE_IP}:30088" -ForegroundColor White
 Write-Host ""
 Write-Host "  AgentCard 確認:" -ForegroundColor White
-Write-Host "    curl http://${MINIKUBE_IP}:30200/.well-known/agent.json" -ForegroundColor Gray
+Write-Host "    curl http://${MINIKUBE_IP}:30200/.well-known/agent-card.json" -ForegroundColor Gray
+Write-Host "    curl http://${MINIKUBE_IP}:30204/.well-known/agent-card.json" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  チャットリクエスト例 (A2A message/send):" -ForegroundColor White
 Write-Host @'

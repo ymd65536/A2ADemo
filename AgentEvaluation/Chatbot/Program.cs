@@ -78,7 +78,6 @@ app.MapPost("/agent/stream", async (HttpContext httpContext, HttpRequest req) =>
     httpContext.Response.Headers.Connection = "keep-alive";
 
     var ct = httpContext.RequestAborted;
-    var writer = httpContext.Response.BodyWriter;
 
     async Task WriteSseEvent(string eventType, string data)
     {

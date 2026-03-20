@@ -110,7 +110,7 @@ echo "  ChatbotViewer (Web UI) : http://${MINIKUBE_IP}:30203"
 echo "  Aspire Dashboard (OTel): http://${MINIKUBE_IP}:30088"
 echo ""
 echo "  AgentCard 確認:"
-echo "    curl http://${MINIKUBE_IP}:30200/.well-known/agent.json"
+echo "    curl http://${MINIKUBE_IP}:30200/.well-known/agent-card.json"
 echo ""
 echo "  チャットリクエスト例 (A2A message/send):"
 cat <<'EOF'
@@ -122,9 +122,10 @@ cat <<'EOF'
         "method": "message/send",
         "params": {
           "message": {
+            "kind": "message",
             "role": "user",
             "messageId": "msg-001",
-            "parts": [{ "text": "こんにちは！今日の天気はどうですか？" }]
+            "parts": [{ "kind": "text", "text": "こんにちは！今日の天気はどうですか？" }]
           }
         }
       }'
