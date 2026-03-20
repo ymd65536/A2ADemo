@@ -78,7 +78,6 @@ app.MapPost("/agent/stream", async (HttpContext httpContext, HttpRequest req) =>
     httpContext.Response.Headers.Connection = "keep-alive";
 
     var ct = httpContext.RequestAborted;
-    var writer = httpContext.Response.BodyWriter;
 
     async Task WriteSseEvent(string eventType, string data)
     {
@@ -97,7 +96,7 @@ app.MapPost("/agent/stream", async (HttpContext httpContext, HttpRequest req) =>
             .GetProperty("text")
             .GetString() ?? "";
 
-        app.Logger.LogInformation("[Chatbot/Stream] message={Message}", userText[..Math.Min(80, userText.Length)]);
+        app.Logger.LogInformation("[Chatbot/Stream] message_length={MessageLength}", userText.Length);
 
         // ─── LLM ストリーミング応答 ───
         var chatbotAnswer = new System.Text.StringBuilder();
