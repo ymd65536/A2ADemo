@@ -122,9 +122,10 @@ cat <<'EOF'
         "method": "message/send",
         "params": {
           "message": {
+            "kind": "message",
             "role": "user",
             "messageId": "msg-001",
-            "parts": [{ "text": "こんにちは！今日の天気はどうですか？" }]
+            "parts": [{ "kind": "text", "text": "こんにちは！今日の天気はどうですか？" }]
           }
         }
       }'
