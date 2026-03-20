@@ -110,7 +110,7 @@ echo "  ChatbotViewer (Web UI) : http://${MINIKUBE_IP}:30203"
 echo "  Aspire Dashboard (OTel): http://${MINIKUBE_IP}:30088"
 echo ""
 echo "  AgentCard 確認:"
-echo "    curl http://${MINIKUBE_IP}:30200/.well-known/agent.json"
+echo "    curl http://${MINIKUBE_IP}:30200/.well-known/agent-card.json"
 echo ""
 echo "  チャットリクエスト例 (A2A message/send):"
 cat <<'EOF'
