@@ -8,6 +8,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using System.Diagnostics;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -67,6 +68,113 @@ chatbot.Attach(taskManager);
 
 app.MapA2A(taskManager, "/agent");
 app.MapWellKnownAgentCard(taskManager, "/agent");
+
+// ─── SSE ストリーミングエンドポイント ───
+// ChatbotViewer からの呼び出し用。LLM トークンを逐次返す。
+app.MapPost("/agent/stream", async (HttpContext httpContext, HttpRequest req) =>
+{
+    httpContext.Response.ContentType = "text/event-stream";
+    httpContext.Response.Headers.CacheControl = "no-cache";
+    httpContext.Response.Headers.Connection = "keep-alive";
+
+    var ct = httpContext.RequestAborted;
+    var writer = httpContext.Response.BodyWriter;
+
+    async Task WriteSseEvent(string eventType, string data)
+    {
+        var line = $"event: {eventType}\ndata: {data}\n\n";
+        await httpContext.Response.WriteAsync(line, ct);
+        await httpContext.Response.Body.FlushAsync(ct);
+    }
+
+    try
+    {
+        using var body = await JsonDocument.ParseAsync(req.Body, cancellationToken: ct);
+        var root = body.RootElement;
+        var userText = root.GetProperty("params")
+            .GetProperty("message")
+            .GetProperty("parts")[0]
+            .GetProperty("text")
+            .GetString() ?? "";
+
+        app.Logger.LogInformation("[Chatbot/Stream] message={Message}", userText[..Math.Min(80, userText.Length)]);
+
+        // ─── LLM ストリーミング応答 ───
+        var chatbotAnswer = new System.Text.StringBuilder();
+
+        if (chatClient is not null)
+        {
+            try
+            {
+                List<OpenAI.Chat.ChatMessage> messages =
+                [
+                    new SystemChatMessage("あなたは親切なアシスタントです。ユーザーの質問に対して日本語で丁寧に答えてください。"),
+                    new UserChatMessage(userText)
+                ];
+
+                var streamingResult = chatClient.CompleteChatStreamingAsync(messages);
+                await foreach (var update in streamingResult.WithCancellation(ct))
+                {
+                    foreach (var part in update.ContentUpdate)
+                    {
+                        if (!string.IsNullOrEmpty(part.Text))
+                        {
+                            chatbotAnswer.Append(part.Text);
+                            var escaped = JsonEncodedText.Encode(part.Text).ToString();
+                            await WriteSseEvent("token", $"{{\"text\":\"{escaped}\"}}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                app.Logger.LogError(ex, "[Chatbot/Stream] ChatClient ストリーミング失敗。モック応答を使用します。");
+                var mockText = $"{userText[..Math.Min(40, userText.Length)]} について承りました。";
+                chatbotAnswer.Append(mockText);
+                var escaped = JsonEncodedText.Encode(mockText).ToString();
+                await WriteSseEvent("token", $"{{\"text\":\"{escaped}\"}}");
+            }
+        }
+        else
+        {
+            app.Logger.LogWarning("[Chatbot/Stream] AzureOpenAI が未設定です。モック応答を使用します。");
+            var mockText = $"{userText} について承りました。何かお手伝いできることはありますか？";
+            chatbotAnswer.Append(mockText);
+            var escaped = JsonEncodedText.Encode(mockText).ToString();
+            await WriteSseEvent("token", $"{{\"text\":\"{escaped}\"}}");
+        }
+
+        // ─── 評価が必要かチェック ───
+        var answer = chatbotAnswer.ToString();
+        var needsEval = ChatbotAgent.NeedsEvaluation(userText) || ChatbotAgent.NeedsEvaluation(answer);
+
+        if (needsEval)
+        {
+            await WriteSseEvent("status", "{\"text\":\"評価エージェントに問い合わせ中...\"}");
+
+            var qaPair = $"[User]\n{userText}\n[Chatbot]\n{answer}";
+            var evaluationAgentUrl = config["Evaluators:EvaluationAgentUrl"]
+                ?? "http://evaluation-agent-svc";
+            var evalResult = await chatbot.CallEvaluationAgentAsync(evaluationAgentUrl, qaPair, ct);
+
+            if (evalResult is not null)
+            {
+                var escaped = JsonEncodedText.Encode(evalResult).ToString();
+                await WriteSseEvent("evaluation", $"{{\"text\":\"{escaped}\"}}");
+            }
+        }
+
+        await WriteSseEvent("done", "{}");
+    }
+    catch (OperationCanceledException) { /* クライアント切断 */ }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "[Chatbot/Stream] ストリーミング処理エラー");
+        try { await WriteSseEvent("error", $"{{\"text\":\"ストリーミングエラー: {JsonEncodedText.Encode(ex.Message)}\"}}"); }
+        catch { /* 書き込み失敗は無視 */ }
+    }
+});
+
 app.Run();
 
 // ─────────────────────────────────────────────
@@ -140,9 +248,9 @@ public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger
         var qaPair = $"[User]\n{userText}\n[Chatbot]\n{chatbotAnswer}";
 
         // ユーザー入力または AI 返答のいずれかにセンシティブなキーワードがあれば評価対象
-        var userEval   = NeedsEvaluation(userText);
+        var userEval = NeedsEvaluation(userText);
         var answerEval = NeedsEvaluation(chatbotAnswer);
-        var needsEval  = userEval || answerEval;
+        var needsEval = userEval || answerEval;
         logger.LogInformation("[Chatbot] needsEval={NeedsEval} (user={UserEval} / answer={AnswerEval})",
             needsEval, userEval, answerEval);
 
@@ -163,7 +271,7 @@ public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger
     }
 
     /// <summary>EvaluationAgent を A2A で呼び出し、評価済みテキストを返す</summary>
-    private async Task<string?> CallEvaluationAgentAsync(string baseUrl, string qaPair, CancellationToken ct)
+    internal async Task<string?> CallEvaluationAgentAsync(string baseUrl, string qaPair, CancellationToken ct)
     {
         try
         {
@@ -190,7 +298,7 @@ public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger
         return null;
     }
 
-    private static bool NeedsEvaluation(string text) =>
+    internal static bool NeedsEvaluation(string text) =>
         EvalTriggerKeywords.Any(k => text.Contains(k, StringComparison.OrdinalIgnoreCase));
 
     private static AgentMessage BuildReply(string text) => new()
@@ -208,7 +316,7 @@ public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger
             Url = agentUrl,
             Capabilities = new AgentCapabilities
             {
-                Streaming = false,
+                Streaming = true,
                 Extensions = new()
             }
         });

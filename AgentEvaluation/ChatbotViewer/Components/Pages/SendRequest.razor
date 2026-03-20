@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @using System.Net.Http.Json
 @using System.Text.Json
+@using System.IO
 @inject IHttpClientFactory HttpClientFactory
 
 <PageTitle>メッセージ送信</PageTitle>
@@ -34,12 +35,11 @@
     </div>
 }
 
-@if (_response is not null)
+@if (_streamingText is not null || _evaluationText is not null || _statusText is not null)
 {
     <div class="card border-success mb-4">
         <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
-            <strong>✅ レスポンス</strong>
-            <span class="badge bg-light text-dark">メッセージ ID: @_response.MessageId</span>
+            <strong>@(_sending ? "⏳ 応答受信中..." : "✅ レスポンス")</strong>
         </div>
         <div class="card-body">
             <div class="mb-3">
@@ -48,17 +48,37 @@
                     <code>@_lastSentMessage</code>
                 </div>
             </div>
-            <div class="mb-3">
-                <h6 class="text-muted">Chatbot の返答</h6>
-                <div class="p-3 bg-success bg-opacity-10 rounded">
-                    <p class="mb-0" style="white-space: pre-wrap;">@_response.Text</p>
+            @if (_streamingText is not null)
+            {
+                <div class="mb-3">
+                    <h6 class="text-muted">Chatbot の返答</h6>
+                    <div class="p-3 bg-success bg-opacity-10 rounded">
+                        <p class="mb-0" style="white-space: pre-wrap;">@_streamingText</p>
+                        @if (_sending && _evaluationText is null)
+                        {
+                            <span class="blinking-cursor">▌</span>
+                        }
+                    </div>
                 </div>
-            </div>
-            <div>
-                <h6 class="text-muted">Raw JSON</h6>
-                <pre class="p-2 bg-light rounded"
-                     style="max-height: 300px; overflow-y: auto;"><code>@_rawResponse</code></pre>
-            </div>
+            }
+            @if (_statusText is not null)
+            {
+                <div class="mb-3">
+                    <div class="text-muted fst-italic">
+                        <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                        @_statusText
+                    </div>
+                </div>
+            }
+            @if (_evaluationText is not null)
+            {
+                <div class="mb-3">
+                    <h6 class="text-muted">評価結果</h6>
+                    <div class="p-3 bg-warning bg-opacity-10 rounded border border-warning">
+                        <p class="mb-0" style="white-space: pre-wrap;">@_evaluationText</p>
+                    </div>
+                </div>
+            }
         </div>
     </div>
 }
@@ -98,12 +118,24 @@
     </div>
 }
 
+<style>
+    .blinking-cursor {
+        animation: blink 1s step-end infinite;
+        color: #198754;
+        font-weight: bold;
+    }
+    @@keyframes blink {
+        50% { opacity: 0; }
+    }
+</style>
+
 @code {
     private string _message = "";
     private bool _sending = false;
     private string? _error;
-    private ChatbotResponse? _response;
-    private string? _rawResponse;
+    private string? _streamingText;
+    private string? _evaluationText;
+    private string? _statusText;
     private string? _lastSentMessage;
     private List<HistoryItem> _history = new();
 
@@ -111,8 +143,9 @@
     {
         _sending = true;
         _error = null;
-        _response = null;
-        _rawResponse = null;
+        _streamingText = "";
+        _evaluationText = null;
+        _statusText = null;
         _lastSentMessage = _message;
 
         try
@@ -140,41 +173,51 @@
                 }
             };
 
-            var httpResponse = await http.PostAsJsonAsync("/agent", request);
-            _rawResponse = await httpResponse.Content.ReadAsStringAsync();
-
-            if (httpResponse.IsSuccessStatusCode)
+            var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/agent/stream")
             {
-                using var doc = JsonDocument.Parse(_rawResponse);
-                var root = doc.RootElement;
+                Content = JsonContent.Create(request)
+            };
+            using var httpResponse = await http.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead);
 
-                if (root.TryGetProperty("result", out var result))
-                {
-                    var messageId = result.GetProperty("messageId").GetString() ?? "N/A";
-                    var parts = result.GetProperty("parts");
-                    var text = parts[0].GetProperty("text").GetString() ?? "";
-
-                    _response = new ChatbotResponse(messageId, text);
-
-                    // 履歴に追加
-                    var isFlagged = text.Contains("問題のあるコンテンツ") || text.Contains("暴力的") || text.Contains("性的");
-                    _history.Insert(0, new HistoryItem(_lastSentMessage, text, DateTime.Now, false, isFlagged));
-                    if (_history.Count > 10) _history.RemoveAt(_history.Count - 1);
-
-                    _message = "";
-                }
-                else if (root.TryGetProperty("error", out var error))
-                {
-                    var errorMsg = error.GetProperty("message").GetString() ?? "Unknown error";
-                    _error = $"A2A エラー: {errorMsg}";
-                    _history.Insert(0, new HistoryItem(_lastSentMessage, errorMsg, DateTime.Now, true, false));
-                }
-            }
-            else
+            if (!httpResponse.IsSuccessStatusCode)
             {
-                _error = $"HTTP エラー ({(int)httpResponse.StatusCode}): {_rawResponse}";
+                var errorBody = await httpResponse.Content.ReadAsStringAsync();
+                _error = $"HTTP エラー ({(int)httpResponse.StatusCode}): {errorBody}";
                 _history.Insert(0, new HistoryItem(_lastSentMessage, _error, DateTime.Now, true, false));
+                return;
             }
+
+            // SSE ストリームを読み取る
+            using var stream = await httpResponse.Content.ReadAsStreamAsync();
+            using var reader = new StreamReader(stream);
+
+            string? currentEvent = null;
+
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync();
+                if (line is null) break;
+
+                if (line.StartsWith("event: "))
+                {
+                    currentEvent = line["event: ".Length..];
+                }
+                else if (line.StartsWith("data: ") && currentEvent is not null)
+                {
+                    var data = line["data: ".Length..];
+                    await ProcessSseEvent(currentEvent, data);
+                    currentEvent = null;
+                }
+            }
+
+            // 履歴に追加
+            var reply = _streamingText ?? "";
+            if (_evaluationText is not null) reply += "\n\n" + _evaluationText;
+            var isFlagged = reply.Contains("問題のあるコンテンツ") || reply.Contains("flagged");
+            _history.Insert(0, new HistoryItem(_lastSentMessage, reply, DateTime.Now, false, isFlagged));
+            if (_history.Count > 10) _history.RemoveAt(_history.Count - 1);
+
+            _message = "";
         }
         catch (Exception ex)
         {
@@ -184,9 +227,55 @@
         finally
         {
             _sending = false;
+            _statusText = null;
+            await InvokeAsync(StateHasChanged);
         }
     }
 
-    private record ChatbotResponse(string MessageId, string Text);
+    private async Task ProcessSseEvent(string eventType, string data)
+    {
+        switch (eventType)
+        {
+            case "token":
+                using (var doc = JsonDocument.Parse(data))
+                {
+                    var text = doc.RootElement.GetProperty("text").GetString() ?? "";
+                    _streamingText += text;
+                }
+                await InvokeAsync(StateHasChanged);
+                break;
+
+            case "status":
+                using (var doc = JsonDocument.Parse(data))
+                {
+                    _statusText = doc.RootElement.GetProperty("text").GetString();
+                }
+                await InvokeAsync(StateHasChanged);
+                break;
+
+            case "evaluation":
+                _statusText = null;
+                using (var doc = JsonDocument.Parse(data))
+                {
+                    _evaluationText = doc.RootElement.GetProperty("text").GetString();
+                }
+                await InvokeAsync(StateHasChanged);
+                break;
+
+            case "done":
+                _statusText = null;
+                await InvokeAsync(StateHasChanged);
+                break;
+
+            case "error":
+                using (var doc = JsonDocument.Parse(data))
+                {
+                    _error = doc.RootElement.GetProperty("text").GetString();
+                }
+                await InvokeAsync(StateHasChanged);
+                break;
+        }
+    }
+
     private record HistoryItem(string Message, string Reply, DateTime Time, bool HasError, bool IsFlagged);
 }

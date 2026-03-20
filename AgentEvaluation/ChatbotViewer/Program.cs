@@ -16,7 +16,7 @@ builder.Services.AddRazorComponents()
 builder.Services.AddHttpClient("chatbot", client =>
 {
     client.BaseAddress = new Uri(chatbotUrl);
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = TimeSpan.FromMinutes(5);
 });
 
 // OpenTelemetry の設定
