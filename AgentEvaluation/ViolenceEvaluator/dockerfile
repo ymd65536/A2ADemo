@@ -1,0 +1,15 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+# NuGet の接続リトライ設定 (Rancher Desktop 等の不安定なネットワーク向け)
+ENV NUGET_ENABLE_ENHANCED_HTTP_RETRY=true
+COPY ["ViolenceEvaluator.csproj", "./"]
+RUN dotnet restore
+COPY . .
+RUN dotnet publish -c Release -o /app
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+WORKDIR /app
+COPY --from=build /app .
+EXPOSE 8080
+ENV ASPNETCORE_URLS=http://+:8080
+ENTRYPOINT ["dotnet", "ViolenceEvaluator.dll"]
