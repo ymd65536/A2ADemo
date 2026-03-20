@@ -138,7 +138,9 @@ app.MapPost("/agent/stream", async (HttpContext httpContext, HttpRequest req) =>
         else
         {
             app.Logger.LogWarning("[Chatbot/Stream] AzureOpenAI が未設定です。モック応答を使用します。");
-            var mockText = $"{userText} について承りました。何かお手伝いできることはありますか？";
+            var mockText = ChatbotAgent.NeedsEvaluation(userText)
+                ? "申し訳ありませんが、そのリクエストにはお応えできません。"
+                : $"{userText} について承りました。何かお手伝いできることはありますか？";
             chatbotAnswer.Append(mockText);
             var escaped = JsonEncodedText.Encode(mockText).ToString();
             await WriteSseEvent("token", $"{{\"text\":\"{escaped}\"}}");
@@ -196,7 +198,7 @@ public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger
     private static readonly string[] EvalTriggerKeywords =
     [
         "kill", "attack", "hurt", "punch", "stab", "bomb", "shoot", "weapon",
-        "殺", "攻撃", "傷", "爆発", "銃", "ナイフ", "暴力",
+        "殺", "攻撃", "傷", "爆発", "爆弾", "銃", "ナイフ", "暴力",
         "sex", "nude", "explicit", "sexual",
         "性的", "裸", "ポルノ", "性的描写", "近親相姦", "アダルト"
     ];
@@ -242,7 +244,9 @@ public class ChatbotAgent(ChatClient? chatClient, IConfiguration config, ILogger
         {
             // モック応答 (Azure OpenAI 未設定時の開発用フォールバック)
             logger.LogWarning("[Chatbot] AzureOpenAI が未設定です。モック応答を使用します。");
-            chatbotAnswer = $"{userText} について承りました。何かお手伝いできることはありますか？";
+            chatbotAnswer = NeedsEvaluation(userText)
+                ? "申し訳ありませんが、そのリクエストにはお応えできません。"
+                : $"{userText} について承りました。何かお手伝いできることはありますか？";
         }
 
         var qaPair = $"[User]\n{userText}\n[Chatbot]\n{chatbotAnswer}";
