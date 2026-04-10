@@ -1,0 +1,1 @@
+FROM us-central1-docker.pkg.dev/serverless-runtimes/google-22-full/runtimes/python312:python312_20251214_3_12_12_RC00
