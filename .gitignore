@@ -4,3 +4,4 @@ dist
 
 # LibMan でダウンロードされる外部ライブラリ
 wwwroot/lib/
+.DS_Store
